@@ -10,7 +10,18 @@ from __future__ import annotations
 
 import re
 from dataclasses import asdict, dataclass, field
-from typing import Any
+from typing import Annotated, Any, Literal
+
+from pydantic import BaseModel, BeforeValidator, ConfigDict, field_validator, model_validator
+
+from .metrics import normalize_severity
+
+TASK_SCHEMA_VERSION = 2
+CORE_LAYERS = ("probe", "reviewer", "det", "semantic", "gate", "core_security", "e2e", "external")
+EXTERNAL_LAYERS = ("fix", "review", "security")
+SOURCE_LAYERS = CORE_LAYERS + EXTERNAL_LAYERS
+TASK_PROFILES = ("change", "bugfix", "")
+NORMALIZED_SEVERITIES = ("high", "medium", "low")
 
 CAPABILITIES = ("F1", "F2", "F3", "F4", "F5", "F6")
 CAPABILITY_NAMES = {
@@ -141,22 +152,350 @@ class DatasetEntry:
         return asdict(self)
 
 
+def _empty_if_none(value: Any) -> Any:
+    return "" if value is None else value
+
+
+def _zero_if_none(value: Any) -> Any:
+    return 0 if value is None else value
+
+
+def _tuple_if_none(value: Any) -> Any:
+    return () if value is None else value
+
+
+_OptStr = Annotated[str, BeforeValidator(_empty_if_none)]
+_OptInt = Annotated[int, BeforeValidator(_zero_if_none)]
+_OptStrTuple = Annotated[tuple[str, ...], BeforeValidator(_tuple_if_none)]
+
+
+class _StrictModel(BaseModel):
+    """TaskSpec 子模型基类：不可变且禁止未知字段。"""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+
+class TaskIdentity(_StrictModel):
+    """任务仓库与提交标识。"""
+
+    repo: _OptStr = ""
+    base_commit: _OptStr = ""
+    head_commit: _OptStr = ""
+    pr_or_issue: _OptStr = ""
+    instance_id: _OptStr = ""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize(cls, raw: Any) -> Any:
+        if not isinstance(raw, dict):
+            return raw
+        data = dict(raw)
+        legacy_commit = data.pop("commit", None)
+        if not str(data.get("base_commit") or "").strip() and legacy_commit not in (None, ""):
+            data["base_commit"] = legacy_commit
+        for key in ("repo", "base_commit", "head_commit", "pr_or_issue", "instance_id"):
+            if key in data and isinstance(data[key], str):
+                data[key] = data[key].strip()
+        instance_id = "" if data.get("instance_id") is None else str(data.get("instance_id")).strip()
+        if not (data.get("pr_or_issue") or "").strip() and instance_id:
+            data["pr_or_issue"] = f"instance:{instance_id}"
+        return data
+
+
+class TaskEnv(_StrictModel):
+    """任务运行环境元数据。"""
+
+    image: _OptStr = ""
+    language: _OptStr = ""
+    version: _OptStr = ""
+    python_version: _OptStr = ""
+    environment_setup_commit: _OptStr = ""
+    prepare_commands: _OptStrTuple = ()
+    test_command: str = "python -m pytest -q"
+
+    @field_validator("test_command", mode="before")
+    @classmethod
+    def _default_test_command(cls, value: Any) -> str:
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return "python -m pytest -q"
+        return value
+
+
+class GoldFinding(_StrictModel):
+    """代码审查标准标注条目。"""
+
+    path: _OptStr
+    line: _OptInt = 0
+    severity: Literal["high", "medium", "low"] = "medium"
+    category: _OptStr = ""
+
+    @field_validator("path")
+    @classmethod
+    def _check_path(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("GoldFinding.path 不能为空")
+        return cleaned
+
+    @field_validator("line")
+    @classmethod
+    def _check_line(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError("GoldFinding.line 不能为负数")
+        return value
+
+    @field_validator("severity", mode="before")
+    @classmethod
+    def _align_severity(cls, value: Any) -> str:
+        if value is None or str(value).strip() == "":
+            return "medium"
+        return normalize_severity(str(value))
+
+
+class FixInput(_StrictModel):
+    """修复类外部任务输入（SWE-bench / BugsInPy / Multi-SWE-bench）。"""
+
+    problem_statement: _OptStr = ""
+    patch: _OptStr = ""
+    test_patch: _OptStr = ""
+    title: _OptStr = ""
+    diff: _OptStr = ""
+    profile: Literal["change", "bugfix", ""] = "bugfix"
+
+
+class FixExpected(_StrictModel):
+    """修复类任务预期测试通过集。"""
+
+    fail_to_pass: _OptStrTuple = ()
+    pass_to_pass: _OptStrTuple = ()
+
+
+class ReviewInput(_StrictModel):
+    """PR 审查任务输入（ReviewBench / SWE-CARE / CodeFuse-CR-Bench）。"""
+
+    diff: _OptStr
+    title: _OptStr = ""
+    problem_statement: _OptStr = ""
+    profile: Literal["change", "bugfix", ""] = "change"
+
+
+class ReviewExpected(_StrictModel):
+    """PR 审查任务金标 findings。"""
+
+    gold_findings: tuple[GoldFinding, ...] = ()
+
+
+class SecurityInput(_StrictModel):
+    """外部漏洞检测输入（Devign / PrimeVul 等）。"""
+
+    code: _OptStr
+    fixed_code: _OptStr = ""
+    diff: _OptStr = ""
+    path: _OptStr = "sample.py"
+    language: _OptStr = "python"
+
+    @field_validator("path")
+    @classmethod
+    def _default_path(cls, value: str) -> str:
+        return value.strip() or "sample.py"
+
+
+class SecurityExpected(_StrictModel):
+    """外部漏洞检测预期标签与严重度。"""
+
+    vulnerable: bool = False
+    severity: Literal["high", "medium", "low"] = "high"
+    cwe: _OptStr = ""
+
+
+class ProbeInput(_StrictModel):
+    """F1 diff 解析探针输入。"""
+
+    probe: _OptStr
+    diff: _OptStr = ""
+
+    @field_validator("probe")
+    @classmethod
+    def _non_empty_probe(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("ProbeInput.probe 不能为空")
+        return cleaned
+
+
+class ProbeExpected(_StrictModel):
+    """F1 diff 解析探针预期路径集合。"""
+
+    paths: _OptStrTuple = ()
+
+
+class ReviewerReplayInput(_StrictModel):
+    """F3 reviewer 离线回放输入。"""
+
+    case_name: _OptStr
+    response: dict[str, Any]
+
+    @field_validator("case_name")
+    @classmethod
+    def _non_empty_case(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("ReviewerReplayInput.case_name 不能为空")
+        return cleaned
+
+
+class ReviewerReplayExpected(_StrictModel):
+    """F3 reviewer 离线回放预期阻断项。"""
+
+    blocking: _OptStrTuple = ()
+
+
+class CoreCaseInput(_StrictModel):
+    """内部核心回归用例输入。"""
+
+    case: dict[str, Any]
+
+    @field_validator("case")
+    @classmethod
+    def _check_case_id(cls, value: dict[str, Any]) -> dict[str, Any]:
+        if not str(value.get("id") or "").strip():
+            raise ValueError("CoreCaseInput.case 必须含非空 id")
+        return value
+
+
+class CoreCaseExpected(_StrictModel):
+    """内部核心回归用例预期结果。"""
+
+    block: bool = False
+    rules: _OptStrTuple = ()
+    tier: _OptStr = ""
+    approvals: int | None = None
+    semantic: bool = False
+
+
+TaskInput = (
+    FixInput | ReviewInput | SecurityInput | ProbeInput | ReviewerReplayInput | CoreCaseInput
+)
+TaskExpected = (
+    FixExpected | ReviewExpected | SecurityExpected | ProbeExpected | ReviewerReplayExpected | CoreCaseExpected
+)
+
+LAYER_SCHEMAS: dict[str, tuple[type[BaseModel], type[BaseModel]]] = {
+    "probe": (ProbeInput, ProbeExpected),
+    "reviewer": (ReviewerReplayInput, ReviewerReplayExpected),
+    "det": (CoreCaseInput, CoreCaseExpected),
+    "semantic": (CoreCaseInput, CoreCaseExpected),
+    "gate": (CoreCaseInput, CoreCaseExpected),
+    "core_security": (CoreCaseInput, CoreCaseExpected),
+    "e2e": (CoreCaseInput, CoreCaseExpected),
+    "external": (CoreCaseInput, CoreCaseExpected),
+    "fix": (FixInput, FixExpected),
+    "review": (ReviewInput, ReviewExpected),
+    "security": (SecurityInput, SecurityExpected),
+}
+
+
+def _coerce_model(value: Any, model_cls: type[BaseModel], task_id: str, bucket: str) -> BaseModel:
+    if isinstance(value, model_cls):
+        return value
+    if isinstance(value, BaseModel):
+        raise ValueError(
+            f"{task_id}: {bucket} 类型 {type(value).__name__} 与预期 {model_cls.__name__} 不匹配"
+        )
+    if not isinstance(value, dict):
+        raise ValueError(f"{task_id}: {bucket} 必须是对象或 {model_cls.__name__}")
+    return model_cls.model_validate(value)
+
+
+def _fill_missing(target: dict[str, Any], source: dict[str, Any], keys: tuple[str, ...]) -> None:
+    for key in keys:
+        cur = target.get(key)
+        if (key not in target or cur in (None, "", [])) and source.get(key) not in (None, ""):
+            target[key] = source[key]
+
+
+def _migrate_v1_task(raw: dict) -> dict:
+    """将 v1 格式 TaskSpec 字典迁移为 v2 契约字典。"""
+    data = dict(raw)
+    layer = str(data.get("source_layer") or "").strip()
+    if data.get("dataset") == "core" and layer == "security":
+        layer = "core_security"
+    data["source_layer"] = layer
+
+    identity = dict(data.get("identity") or {})
+    inp = dict(data.get("input") or {})
+    exp = dict(data.get("expected") or {})
+    env = dict(data.get("env") or {})
+    env.pop("window", None)
+    env.pop("snapshot_root", None)
+
+    instance = inp.pop("instance", None)
+    inst = instance if isinstance(instance, dict) else {}
+
+    if layer == "fix":
+        _fill_missing(inp, inst, ("problem_statement", "title", "patch", "test_patch", "diff"))
+        _fill_missing(
+            env, inst,
+            (
+                "version", "python_version", "environment_setup_commit",
+                "image", "test_command", "prepare_commands", "language",
+            ),
+        )
+        _fill_missing(identity, inst, ("instance_id", "repo", "base_commit", "head_commit"))
+        _fill_missing(exp, inst, ("fail_to_pass", "pass_to_pass"))
+    elif layer == "review":
+        _fill_missing(inp, inst, ("title", "problem_statement", "diff"))
+        inp.setdefault("diff", "")
+        _fill_missing(identity, inst, ("head_commit", "instance_id", "repo", "base_commit"))
+        _fill_missing(exp, inst, ("gold_findings",))
+    elif layer == "security":
+        _fill_missing(inp, inst, ("code", "fixed_code", "diff", "path", "language"))
+        inp.setdefault("code", "")
+        if not identity.get("base_commit") and inst.get("commit"):
+            identity["base_commit"] = inst["commit"]
+        _fill_missing(identity, inst, ("repo", "instance_id", "base_commit"))
+        if "vulnerable" not in exp and "vulnerable" in inst:
+            exp["vulnerable"] = bool(inst["vulnerable"])
+        _fill_missing(exp, inst, ("cwe", "severity"))
+        if "severity" in exp:
+            exp["severity"] = normalize_severity(str(exp["severity"] or "high"))
+    elif layer == "reviewer":
+        rev = inp.pop("reviewer", None)
+        if isinstance(rev, dict):
+            if not inp.get("case_name"):
+                inp["case_name"] = str(
+                    rev.get("case_name") or str(data.get("task_id") or "").rsplit(".", 1)[-1]
+                )
+            if "response" not in inp:
+                inp["response"] = dict(rev.get("response") or {})
+            if "blocking" not in exp and "expected_blocking" in rev:
+                exp["blocking"] = list(rev.get("expected_blocking") or [])
+
+    data["identity"] = identity
+    data["input"] = inp
+    data["expected"] = exp
+    data["env"] = env
+    data["schema_version"] = TASK_SCHEMA_VERSION
+    return data
+
+
 @dataclass(frozen=True)
 class TaskSpec:
-    """统一任务。`input`/`expected` 是适配器私有载荷，执行层按 `source_layer` 分派。"""
+    """统一任务。四桶载荷经 Pydantic v2 强校验，执行层按 `source_layer` 分派。"""
 
     task_id: str
     dataset: str
     capabilities: tuple[str, ...]
-    identity: dict[str, str]
-    input: dict[str, Any]
-    expected: dict[str, Any]
-    env: dict[str, Any]
+    identity: TaskIdentity
+    input: TaskInput
+    expected: TaskExpected
+    env: TaskEnv
     license: str
     quality_grade: str
     source_layer: str = ""
     sample_uid: str = ""
     role: str = DEFAULT_ROLE
+    schema_version: int = TASK_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
         _require(bool(str(self.task_id).strip()), "TaskSpec.task_id 不能为空")
@@ -166,23 +505,44 @@ class TaskSpec:
         _require(len(set(caps)) == len(caps), f"{self.task_id}: capabilities 有重复")
         for cap in caps:
             _require(cap in CAPABILITIES, f"{self.task_id}: 未知能力 {cap!r}")
+        object.__setattr__(self, "capabilities", caps)
         _require(self.role in ROLES, f"{self.task_id}: 未知 role {self.role!r}")
         _require(self.quality_grade in QUALITY_GRADES,
                  f"{self.task_id}: 未知 quality_grade {self.quality_grade!r}")
-        for name, value in (
-            ("identity", self.identity), ("input", self.input),
-            ("expected", self.expected), ("env", self.env),
-        ):
-            _require(isinstance(value, dict), f"{self.task_id}: {name} 必须是对象")
+        layer = str(self.source_layer or "").strip()
+        _require(layer in SOURCE_LAYERS, f"{self.task_id}: 未知或缺失 source_layer {self.source_layer!r}")
+        object.__setattr__(self, "source_layer", layer)
+        version = int(self.schema_version)
+        _require(version >= 1, f"{self.task_id}: schema_version 必须 >= 1")
+        object.__setattr__(self, "schema_version", version)
+
+        input_cls, expected_cls = LAYER_SCHEMAS[layer]
+        object.__setattr__(self, "identity", _coerce_model(self.identity, TaskIdentity, self.task_id, "identity"))
+        object.__setattr__(self, "env", _coerce_model(self.env, TaskEnv, self.task_id, "env"))
+        object.__setattr__(self, "input", _coerce_model(self.input, input_cls, self.task_id, "input"))
+        object.__setattr__(self, "expected", _coerce_model(self.expected, expected_cls, self.task_id, "expected"))
 
     def to_dict(self) -> dict:
-        payload = asdict(self)
-        payload["capabilities"] = list(self.capabilities)
-        return payload
+        return {
+            "task_id": self.task_id,
+            "dataset": self.dataset,
+            "capabilities": list(self.capabilities),
+            "identity": self.identity.model_dump(mode="json"),
+            "input": self.input.model_dump(mode="json"),
+            "expected": self.expected.model_dump(mode="json"),
+            "env": self.env.model_dump(mode="json"),
+            "license": self.license,
+            "quality_grade": self.quality_grade,
+            "source_layer": self.source_layer,
+            "sample_uid": self.sample_uid,
+            "role": self.role,
+            "schema_version": self.schema_version,
+        }
 
     @classmethod
     def from_dict(cls, raw: dict) -> "TaskSpec":
-        data = dict(raw)
+        version = int(raw.get("schema_version") or 1)
+        data = _migrate_v1_task(raw) if version < TASK_SCHEMA_VERSION else dict(raw)
         data["capabilities"] = tuple(data.get("capabilities") or ())
         return cls(**data)
 
@@ -269,10 +629,17 @@ class RunMeta:
 
 
 __all__ = [
+    "TASK_SCHEMA_VERSION", "CORE_LAYERS", "EXTERNAL_LAYERS", "SOURCE_LAYERS",
+    "TASK_PROFILES", "NORMALIZED_SEVERITIES", "LAYER_SCHEMAS",
     "CAPABILITIES", "CAPABILITY_NAMES", "CAPABILITY_WEIGHTS", "DIAGNOSTIC_CAPABILITIES",
     "ROLES", "DEFAULT_ROLE", "PRIMARY_REQUIRED", "PRIMARY_WEIGHTED", "INTEGRATION",
     "SUPPLEMENTARY_WEIGHTED", "COVERAGE_TARGETS",
     "OBSERVATION_STATUSES", "DATASET_STATUSES",
     "QUALITY_GRADES", "GRADE_WEIGHTS", "license_is_clear",
+    "TaskIdentity", "TaskEnv", "GoldFinding",
+    "FixInput", "FixExpected", "ReviewInput", "ReviewExpected",
+    "SecurityInput", "SecurityExpected", "ProbeInput", "ProbeExpected",
+    "ReviewerReplayInput", "ReviewerReplayExpected", "CoreCaseInput", "CoreCaseExpected",
+    "TaskInput", "TaskExpected",
     "DatasetEntry", "TaskSpec", "Observation", "ScoreRecord", "RunMeta",
 ]

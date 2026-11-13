@@ -1,0 +1,36 @@
+# 评测平台质量门槛（报告型，不阻断退出码）
+#
+# 说明：
+# - enforce=false 时报告仍输出 OK/PARTIAL/PASS/WARN/FAIL 等判定，但 CLI 返回 0；
+# - floors 是每个功能维度的最低合格线（0..100）；
+# - regression 是相对基线的退化阈值（百分点），超过即判 FAIL；
+# - min_samples 以下的来源只作定性证据，不进入分母；
+# - recommended_samples 只影响 small_sample 提示，不改变计分。
+schema_version: 1
+enforce: false
+
+weights:
+  F2: 0.25
+  F3: 0.25
+  F4: 0.25
+  F5: 0.15
+  F6: 0.10
+
+floors:
+  F1: 70
+  F2: 60
+  F3: 60
+  F4: 55
+  F5: 80
+  F6: 85
+
+regression:
+  composite: 2.0
+  dimension: 5.0
+
+min_samples:
+  default: 3
+  recommended: 10
+
+# 低于合格线但不超过该幅度时判 WARN，而不是 FAIL。
+warn_margin: 2.0

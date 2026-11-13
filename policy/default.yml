@@ -1,0 +1,162 @@
+version: 1
+# internal：公司内部 PR（默认 change profile，按变更风险分级审批）
+# external：外部/不可信 PR（bugfix 复现门禁，历史行为）
+mode: internal
+
+supported:
+  pr_types: [bugfix, feature, refactor, docs, chore]
+  languages: [python]
+
+profiles:
+  default: change
+  allow: [bugfix, feature, refactor, docs, chore]
+
+limits:
+  max_files: 50
+  max_changed_lines: 3000
+  max_diff_bytes: 2000000
+
+gates:
+  require_reproduction: false      # internal 下不要求复现；bugfix profile 仍会尝试复现
+  require_existing_tests_green: true
+  reject_confidence: 0.85
+  merge_mode: auto                 # auto | human（human 可被环境变量收紧，不可放宽）
+  merge_method: squash
+  semantic_block_threshold: 0.8
+
+tiers:
+  rules:
+    T0:
+      paths: ["docs/**", "**/*.md", "**/*.rst", "**/*.txt", "**/*.adoc"]
+      max_changed_lines: 200
+    T2:
+      paths:
+        - "**/auth/**"
+        - "**/security/**"
+        - "**/migrations/**"
+        - "**/crypto/**"
+        - "**/billing/**"
+        - "**/payments/**"
+        - ".github/**"
+        - "dockerfiles/**"
+        - "pyproject.toml"
+        - "requirements*.txt"
+      min_changed_lines: 1000
+  default: T1
+  min_human_approvals: {T0: 0, T1: 1, T2: 2}
+  require_non_author_for: [T2]
+  force_human_paths:
+    - ".github/workflows/**"
+    - "CODEOWNERS"
+    - ".codeguard/**"
+    - "**/auth/**"
+    - "**/billing/**"
+
+# 可信作者只支持具体 login；"team:org/team" 需 GitHub team API，暂按不可信处理
+trusted_authors: []
+
+review:
+  guidance_path: .codeguard/review.md
+  max_nits: 5
+  depth_by_tier: {T0: quick, T1: standard, T2: deep}
+  max_findings_verified: 5
+
+merge:
+  allow_zero_human: false          # 开启后 T0 才允许 0 人审批
+  queue:
+    update_branch_on_stale: false
+    max_attempts: 1
+
+protected_paths:
+  - ".github/workflows/**"
+  - "CODEOWNERS"
+  - ".codeguard/**"
+
+high_risk_paths:
+  - "**/auth/**"
+  - "**/security/**"
+  - "**/migrations/**"
+  - "**/crypto/**"
+  - "pyproject.toml"
+  - "requirements*.txt"
+
+sandbox:
+  image: "codeguard-sandbox-python:3.12"
+  test_commands: ["python -m pytest -q"]
+  test_command_template: "python -m pytest -q {tests}"
+  timeout_sec: 300
+  prepare_commands: []
+  checks: []
+  prepare_network: none            # none | bridge（prepare 阶段装依赖时才需要）
+
+# Agent 工具能力：默认开启，按 role 授予不同档位。
+# 生效能力 = min(role 档位, tier 上限, mode 上限, 环境变量上限)：
+#   - T0 最多 read；
+#   - external 模式最多 external_max_capability；
+#   - AGENT_TOOLS_MAX_CAPABILITY / AGENT_TOOLS_DISABLED 只能收紧。
+agents:
+  tools:
+    enabled: true
+    protocol: auto
+    max_steps: 6
+    max_tool_calls: 6
+    max_wall_sec: 120
+    max_output_chars: 8000
+    sandbox_timeout_sec: 120
+    allow_commands:
+      - "python -m pytest"
+      - "python -m ruff"
+      - "python -m mypy"
+      - "python -m compileall"
+      - "pytest"
+      - "ruff"
+      - "mypy"
+    external_max_capability: read
+    roles:
+      semantic_detector: read
+      finding_verifier: read
+      issue_verifier: read
+      reviewer: exec
+      fixer: write
+  mcp:
+    enabled: true
+    max_capability: read
+    external_max_capability: read
+    tool_name_prefix: true
+    servers:
+      - name: osv_security
+        enabled: true
+        transport: stdio
+        command: python
+        args: ["-m", "codeguard.mcp.servers.osv_server"]
+        timeout_sec: 15
+        capability: read
+        allowed_roles: ["semantic_detector", "reviewer"]
+      - name: git_history
+        enabled: true
+        transport: stdio
+        command: python
+        args: ["-m", "codeguard.mcp.servers.git_server"]
+        timeout_sec: 15
+        capability: read
+        allowed_roles: ["semantic_detector", "finding_verifier", "reviewer", "fixer"]
+      - name: knowledge
+        enabled: true
+        transport: stdio
+        command: python
+        args: ["-m", "codeguard.mcp.servers.knowledge_server"]
+        timeout_sec: 15
+        capability: read
+        allowed_roles: ["semantic_detector", "finding_verifier", "reviewer", "fixer"]
+      - name: github_context
+        enabled: true
+        transport: stdio
+        command: python
+        args: ["-m", "codeguard.mcp.servers.github_server"]
+        env_vars: ["GITHUB_TOKEN", "GH_TOKEN"]
+        timeout_sec: 15
+        capability: read
+        allowed_roles: ["issue_verifier", "reviewer"]
+
+rules:
+  disable: []

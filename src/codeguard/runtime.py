@@ -1,40 +1,45 @@
-"""运行时封装：启动/恢复任务、读取中断状态、SSE 事件广播（CodeGuard 版）。
-
-修复（原系统 P0）：start/resume 的 graph.invoke 全程 try/except——任何节点异常
-（含 GraphRecursionError）都会发射 error 事件并更新内存进度，前端立刻可见，
-彻底杜绝"任务静默卡死、进度永远停住"。
-"""
+"""运行时封装：启动/恢复 PR 审查任务、SSE 事件广播、快照读取。"""
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 from typing import Any, AsyncGenerator, Optional
 
 from langgraph.types import Command
 
-from .config import CodeGuardConfig
+from .config import Settings
+from .github.app_auth import CredentialStore, GitHubAppAuth
+from .github.client import GitHubClient
 from .graph import build_graph, make_checkpointer
-from .nodes import CodeGuardNodes
-from .state import CodeGuardState, initial_state
+from .models import PullRequestContext
+from .nodes import ReviewNodes
+from .state import ReviewState, initial_state
 
 
 class CodeGuardRuntime:
-    """对编译后图的薄封装，提供 start / resume / snapshot / 事件流。
-
-    interrupt 状态由 SqliteSaver 持久化，进程重启后用同 job_id（=thread_id）
-    调用 snapshot/resume 即从断点恢复。
-    """
-
     def __init__(
         self,
-        cfg: CodeGuardConfig,
-        nodes: Optional[CodeGuardNodes] = None,
+        cfg: Settings,
+        nodes: Optional[ReviewNodes] = None,
         checkpointer=None,
+        app_auth: Optional[GitHubAppAuth] = None,
     ):
         self.cfg = cfg
         self.checkpointer = checkpointer or make_checkpointer(cfg.checkpoint_path)
-        self.nodes = nodes or CodeGuardNodes(cfg)
-        self.nodes.rt = self  # 向节点暴露 runtime，供 SSE 事件发射
+        self.app_auth = app_auth or GitHubAppAuth(
+            CredentialStore(cfg.github_app_store), api_url=cfg.github_api_url,
+        )
+        try:
+            self.app_auth.load()
+        except Exception:  # noqa: BLE001 - 凭据损坏按未接入处理，状态里会体现
+            pass
+        self._owns_github = nodes is None
+        provider = self.app_auth.token_for_repo if self._app_enabled() else None
+        self.nodes = nodes or ReviewNodes(cfg, token_provider=provider)
+        if self._owns_github:
+            self.nodes.github = self._build_github_client()
+        self.nodes.rt = self
         self.graph = build_graph(self.nodes, checkpointer=self.checkpointer)
         self.progress: dict[str, dict] = {}
         self._subscribers: dict[str, list[asyncio.Queue]] = {}
@@ -44,35 +49,78 @@ class CodeGuardRuntime:
         except RuntimeError:
             self._loop = None
 
+    # ── GitHub 鉴权装配 ──
+
+    def _app_enabled(self) -> bool:
+        if self.cfg.github_auth_mode == "pat":
+            return False
+        return self.app_auth.configured
+
+    def _build_github_client(self):
+        if self._app_enabled():
+            return GitHubClient(
+                None,
+                token_provider=self.app_auth.token_for_repo,
+                token_invalidator=self.app_auth.invalidate,
+                api_url=self.cfg.github_api_url,
+            )
+        if self.cfg.github_token:
+            return GitHubClient(self.cfg.github_token, api_url=self.cfg.github_api_url)
+        return None
+
+    def refresh_github(self) -> None:
+        """App 连接/断开后重新装配 client 与 token provider；不改图拓扑。"""
+        provider = self.app_auth.token_for_repo if self._app_enabled() else None
+        self.nodes.token_provider = provider
+        if self._owns_github:
+            # 不关闭旧 client：可能仍有 job 线程在用它发请求；连接/断开是低频操作。
+            self.nodes.github = self._build_github_client()
+
+    def github_webhook_secret(self) -> str:
+        """App 自动注册的 secret 优先，其次才是 .env 的 GITHUB_WEBHOOK_SECRET。"""
+        return self.app_auth.webhook_secret() or (self.cfg.github_webhook_secret or "")
+
+    @property
+    def github_auth_kind(self) -> str:
+        if self._app_enabled():
+            return "app"
+        if self.cfg.github_token:
+            return "pat"
+        return "none"
+
+    def github_status(self) -> dict:
+        status = self.app_auth.status()
+        status["mode"] = self.cfg.github_auth_mode
+        status["auth"] = self.github_auth_kind
+        status["pat_configured"] = bool(self.cfg.github_token)
+        status["public_url"] = self.cfg.public_url
+        status["webhook_url"] = (
+            f"{self.cfg.public_url}/webhooks/github" if self.cfg.public_url else ""
+        )
+        return status
+
     def _config(self, job_id: str) -> dict:
         return {"configurable": {"thread_id": job_id}, "recursion_limit": 100}
 
-    # ── SSE 事件系统 ──
+    # ── SSE ──
 
     def emit_event(self, job_id: str, event_type: str, data: dict | None = None):
-        """线程安全的事件发射：推送到该 job 所有订阅者队列。"""
         with self._lock:
-            queues = self._subscribers.get(job_id, [])
-        if not queues:
+            queues = list(self._subscribers.get(job_id, []))
+        if not queues or not self._loop:
             return
         event = {"type": event_type, "data": data or {}}
-        loop = self._loop
-        if not loop:
-            return
         for q in queues:
             try:
-                loop.call_soon_threadsafe(q.put_nowait, event)
-            except Exception:  # noqa: BLE001 — 事件发射失败不阻塞主流程
+                self._loop.call_soon_threadsafe(q.put_nowait, event)
+            except Exception:  # noqa: BLE001
                 pass
 
     def subscribe(self, job_id: str) -> tuple[asyncio.Queue, list[asyncio.Queue]]:
-        """为 SSE 端点创建事件订阅。返回 (queue, subscribers_list)。"""
         q: asyncio.Queue = asyncio.Queue(maxsize=100)
         with self._lock:
-            if job_id not in self._subscribers:
-                self._subscribers[job_id] = []
-            self._subscribers[job_id].append(q)
-        return q, self._subscribers.get(job_id, [])
+            self._subscribers.setdefault(job_id, []).append(q)
+            return q, self._subscribers[job_id]
 
     def unsubscribe(self, job_id: str, q: asyncio.Queue):
         with self._lock:
@@ -81,18 +129,15 @@ class CodeGuardRuntime:
                 queues.remove(q)
 
     async def event_stream(self, job_id: str) -> AsyncGenerator[str, None]:
-        """SSE 事件流生成器。"""
         q, _ = self.subscribe(job_id)
         try:
             progress = self.get_progress(job_id)
-            yield f"event: progress\ndata: {self._json_dumps({'status_text': progress.get('status_text', ''), 'percentage': progress.get('percentage', 0)})}\n\n"
+            yield f"event: progress\ndata: {json.dumps(progress, ensure_ascii=False)}\n\n"
             while True:
                 try:
                     event = await asyncio.wait_for(q.get(), timeout=30.0)
-                    event_type = event.get("type", "message")
-                    event_data = event.get("data", {})
-                    yield f"event: {event_type}\ndata: {self._json_dumps(event_data)}\n\n"
-                    if event_type in ("done", "error"):
+                    yield f"event: {event['type']}\ndata: {json.dumps(event['data'], ensure_ascii=False)}\n\n"
+                    if event["type"] in ("done", "error"):
                         break
                 except asyncio.TimeoutError:
                     yield ": heartbeat\n\n"
@@ -101,91 +146,73 @@ class CodeGuardRuntime:
         finally:
             self.unsubscribe(job_id, q)
 
-    @staticmethod
-    def _json_dumps(obj: dict) -> str:
-        import json
-        return json.dumps(obj, ensure_ascii=False)
-
-    # ── 进度 ──
-
-    def update_progress(self, job_id: str, status_text: str, percentage: int = 0):
-        self.progress[job_id] = {"status_text": status_text, "percentage": percentage}
-        self.emit_event(job_id, "progress", {
-            "status_text": status_text,
-            "percentage": percentage,
-        })
+    def update_progress(self, job_id: str, text: str, percentage: int = 0):
+        self.progress[job_id] = {"status_text": text, "percentage": percentage}
+        self.emit_event(job_id, "progress", {"status_text": text, "percentage": percentage})
 
     def get_progress(self, job_id: str) -> dict:
         return self.progress.get(job_id, {"status_text": "准备中...", "percentage": 0})
 
-    # ── 任务生命周期 ──
+    # ── 生命周期 ──
 
-    def start(self, user_input: str, job_id: str, repo_dir: str = "") -> dict:
-        """启动新任务，跑到首个中断或结束。异常时发射 error 事件（不再静默卡死）。"""
+    def start(self, pr: PullRequestContext, job_id: str, **overrides) -> dict:
         try:
-            self.graph.invoke(initial_state(user_input, job_id, repo_dir), self._config(job_id))
-        except Exception as e:  # noqa: BLE001 — 含 GraphRecursionError / LLM 耗尽
-            self._record_crash(job_id, e)
+            self.graph.invoke(initial_state(pr, job_id, **overrides), self._config(job_id))
+        except Exception as exc:  # noqa: BLE001
+            self._record_crash(job_id, exc)
             raise
         snap = self.snapshot(job_id)
         self._emit_terminal(job_id, snap)
         return snap
 
     def resume(self, job_id: str, value: Any) -> dict:
-        """从中断恢复，value 为人工决策。异常时发射 error 事件。"""
         try:
             self.graph.invoke(Command(resume=value), self._config(job_id))
-        except Exception as e:  # noqa: BLE001
-            self._record_crash(job_id, e)
+        except Exception as exc:  # noqa: BLE001
+            self._record_crash(job_id, exc)
             raise
         snap = self.snapshot(job_id)
         self._emit_terminal(job_id, snap)
         return snap
 
     def _record_crash(self, job_id: str, err: Exception):
-        """崩溃兜底：进度置败 + error 事件，前端/CLI 立刻可见。"""
-        self.progress[job_id] = {
-            "status_text": f"执行异常: {err}",
-            "percentage": 100,
-        }
+        self.progress[job_id] = {"status_text": f"执行异常: {err}", "percentage": 100}
         self.emit_event(job_id, "error", {"error": str(err), "status": "failed"})
 
     def _emit_terminal(self, job_id: str, snap: dict):
-        """任务到达终态时发射 done/interrupt 事件。"""
+        values = snap.get("values", {})
         if snap.get("done"):
-            values = snap.get("values", {})
-            if values.get("status") == "done":
+            if values.get("outcome"):
                 self.emit_event(job_id, "done", {
-                    "patch_path": values.get("patch_path", ""),
-                    "coverage_report_path": values.get("coverage_report_path", ""),
-                    "status": "done",
+                    "outcome": values.get("outcome"),
+                    "merge_commit_sha": values.get("merge_commit_sha", ""),
                 })
             else:
                 self.emit_event(job_id, "error", {
-                    "error": values.get("error", "未知错误"),
+                    "error": values.get("error", "任务结束但无 outcome"),
                     "status": values.get("status", "failed"),
                 })
         elif snap.get("interrupt"):
             self.emit_event(job_id, "interrupt", snap["interrupt"])
 
     def snapshot(self, job_id: str) -> dict:
-        """读取当前状态与中断信息。"""
         st = self.graph.get_state(self._config(job_id))
-        values: CodeGuardState = st.values
+        values: ReviewState = st.values
         interrupt = None
         if st.next and st.tasks:
-            for t in st.tasks:
-                if t.interrupts:
-                    interrupt = t.interrupts[0].value
+            for task in st.tasks:
+                if task.interrupts:
+                    interrupt = task.interrupts[0].value
                     break
-
         progress = self.get_progress(job_id)
-        if not st.next:
-            if values.get("status") == "done":
-                progress = {"status_text": "修复完成", "percentage": 100}
-            elif values.get("status") == "failed":
+        if interrupt and not progress.get("status_text", "").startswith("等待"):
+            # 中断信息可能来自 checkpoint 恢复，进程内进度已过期，以 interrupt 为准。
+            progress = {"status_text": "等待人工介入", "percentage": int(progress.get("percentage", 0))}
+        if not st.next and not interrupt:
+            if values.get("outcome"):
+                progress = {"status_text": f"完成: {values.get('outcome')}", "percentage": 100}
+            else:
                 progress = {"status_text": f"失败: {values.get('error', '')}", "percentage": 100}
-
         return {
             "job_id": job_id,
             "values": values,
@@ -194,3 +221,6 @@ class CodeGuardRuntime:
             "done": not st.next,
             "progress": progress,
         }
+
+
+__all__ = ["CodeGuardRuntime"]

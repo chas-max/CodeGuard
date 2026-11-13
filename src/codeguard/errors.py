@@ -1,8 +1,6 @@
-"""统一异常层次。
+"""统一异常层次。"""
 
-设计：可重试错误（瞬时网络/限流）走 tenacity 退避重试；不可重试错误（参数错误、
-沙箱环境损坏）立即抛出；预算熔断与配置缺失各自独立类型，便于路由与上层处理。
-"""
+from __future__ import annotations
 
 
 class CodeGuardError(RuntimeError):
@@ -17,13 +15,44 @@ class NonRetryableError(CodeGuardError):
     """不可重试的错误（参数错误、解析失败已兜底无果、沙箱环境不可用）。"""
 
 
+class ConfigError(CodeGuardError):
+    """配置缺失或非法。"""
+
+
+class MissingConfigError(ConfigError):
+    """必需的配置项未设置。"""
+
+
+class PolicyError(ConfigError):
+    """策略文件非法或不可用。"""
+
+
 class SandboxError(NonRetryableError):
-    """沙箱执行环境异常（隔离目录创建失败、pytest 启动失败等）。"""
+    """沙箱环境异常（Docker 不可用、容器启动失败等）。"""
+
+
+class GitHubError(NonRetryableError):
+    """GitHub API 或 webhook 异常。"""
+
+
+class GitHubAuthError(GitHubError):
+    """GitHub App 凭据、签名或 installation token 不可用。"""
+
+
+class AgentError(CodeGuardError):
+    """Agent 输出不合法或调用失败。"""
+
+
+class CoordinatorError(CodeGuardError):
+    """协调器调度失败（依赖环、单写者冲突等）。"""
 
 
 class BudgetExceededError(CodeGuardError):
-    """预算熔断：累计成本超过 BUDGET_MAX_CNY。"""
+    """预算熔断。"""
 
 
-class MissingConfigError(CodeGuardError):
-    """必需的环境变量/配置未设置。"""
+__all__ = [
+    "CodeGuardError", "RetryableError", "NonRetryableError", "ConfigError",
+    "MissingConfigError", "PolicyError", "SandboxError", "GitHubError",
+    "GitHubAuthError", "AgentError", "CoordinatorError", "BudgetExceededError",
+]

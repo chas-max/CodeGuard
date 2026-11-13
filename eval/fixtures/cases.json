@@ -1,0 +1,44 @@
+[
+  {
+    "name": "valid_fix",
+    "source": "synthetic",
+    "head": {},
+    "expected": {"block": false, "rules": []}
+  },
+  {
+    "name": "syntax_error",
+    "source": "synthetic",
+    "head": {"src/calc.py": "def divide(a, b:\n    return a\n"},
+    "expected": {"block": true, "rules": ["SYN-001"]}
+  },
+  {
+    "name": "secret",
+    "source": "synthetic",
+    "head": {"src/secret.py": "KEY = 'AKIAABCDEFGHIJKLMNOP'\n"},
+    "expected": {"block": true, "rules": ["SEC-001"]}
+  },
+  {
+    "name": "test_weakening",
+    "source": "synthetic",
+    "head": {"tests/test_calc.py": "from src.calc import divide\n\ndef test_ok():\n    pass\n"},
+    "expected": {"block": true, "rules": ["TEST-001"]}
+  },
+  {
+    "name": "api_break",
+    "source": "synthetic",
+    "head": {"src/calc.py": "def divide(a):\n    return a\n"},
+    "expected": {"block": true, "rules": ["API-001"]}
+  },
+  {
+    "name": "protected_path",
+    "source": "synthetic",
+    "head": {".github/workflows/ci.yml": "name: ci\n"},
+    "expected": {"block": true, "rules": ["PATH-001"]}
+  },
+  {
+    "name": "docs_only",
+    "source": "synthetic",
+    "head": {"docs/guide.md": "# guide\n\n更新说明。\n"},
+    "expected": {"block": false, "rules": []}
+  }
+]

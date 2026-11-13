@@ -2,14 +2,19 @@ __pycache__/
 *.pyc
 *.pyo
 .pytest_cache/
+.pytest_tmp*/
 .coverage
+.coverage.*
 htmlcov/
 *.egg-info/
 dist/
 build/
+*.tsbuildinfo
 
 # 环境与密钥
 .env
+*.pem
+github-app.json
 .venv/
 venv/
 
@@ -23,14 +28,30 @@ user_profile.json
 chroma_db/
 data/
 reports/
+.pytest_tmp_new/
 
-# IDE
+# IDE / 本地工具状态
 .idea/
+.zcode/
+.workbuddy/
+.codebuddy/
+CODEBUDDY.md
+方案.md
 node_modules/
 
 # 运行时/调试产物
+.tmp/
+.demo/
 .gradio/
 .playwright-mcp/
 e2e-success.png
 frontend-fixed.png
 frontend-initial.png
+
+# 评测数据集物化产物（数据本体不提交，fixtures 除外）
+eval/datasets/bench/*/instances.jsonl
+eval/datasets/bench/*/manifest.json
+eval/datasets/bench/*/raw/
+eval/datasets/bench/snapshots/
+eval/datasets/bench/dedup.json
+eval/datasets/bench/**/*.tmp

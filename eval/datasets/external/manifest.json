@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "datasets": [],
+  "notes": [
+    "外部切片不进入核心评分卡分母，单独统计；snapshot_ready=false 时执行层标记 skipped，不计通过。",
+    "SWE-bench Lite：MIT，可离线固化，用于验证“合法修复不被误拦”与 validate 通过率。",
+    "SWE-CARE / CodeFuse-CR-Bench：仓库有 LICENSE（以文件为准），用于 reviewer 语义召回切片。",
+    "Qodo / Greptile / CR-Bench 许可不明确：默认拒绝写入仓库，仅本地 --allow-unlicensed 使用。",
+    "构建方式：python -m eval.fetch_external --dataset swebench_lite --source <本地导出> --limit 15",
+    "校验方式：python -m eval.fetch_external --offline"
+  ]
+}

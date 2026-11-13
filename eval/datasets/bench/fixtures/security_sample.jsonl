@@ -1,0 +1,3 @@
+{"id":"sec-1","repo":"demo/repo","commit":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","vulnerable":true,"code":"def render(name):\n    return '<p>' + name + '</p>'\n","cwe":"CWE-79","severity":"high"}
+{"id":"sec-2","repo":"demo/repo","commit":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","vulnerable":false,"code":"def render(name):\n    return '<p>' + escape(name) + '</p>'\n","cwe":"","severity":"low"}
+{"id":"sec-3","repo":"demo/repo","commit":"cccccccccccccccccccccccccccccccccccccccc","vulnerable":true,"code":"def query(cursor, name):\n    return cursor.execute('select * from t where n=' + name)\n","cwe":"CWE-89","severity":"high"}

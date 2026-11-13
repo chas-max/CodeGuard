@@ -1,0 +1,276 @@
+{
+  "schema_version": 1,
+  "notes": [
+    "role 决定数据集进入哪条轨道：primary（外部主分）/ supplementary（自建补充分）/ diagnostic（诊断）；缺省 supplementary。",
+    "主分只接受 role=primary + status=approved + 许可证清晰的数据集；candidate 不进入主分。",
+    "capabilities 的值是该数据集对某能力的覆盖权重（0..1），不是样本权重；来源权重在评分层按 grade × coverage 归一化。",
+    "verification=pending 表示仓库、许可证、字段或规模尚未在本机核验，不得当作既定事实。",
+    "数据本体不提交：instances.jsonl / manifest.json / snapshots 都在 .gitignore 中。"
+  ],
+  "datasets": [
+    {
+      "name": "core",
+      "adapter": "core",
+      "kind": "core",
+      "role": "supplementary",
+      "license": "internal",
+      "status": "approved",
+      "quality_grade": "A",
+      "capabilities": {
+        "F1": 1.0,
+        "F2": 1.0,
+        "F3": 1.0,
+        "F4": 0.0,
+        "F5": 0.8,
+        "F6": 1.0
+      },
+      "primary_metrics": {
+        "F1": "probe_accuracy",
+        "F2": "f1",
+        "F3": "f1",
+        "F5": "validation_pass_rate",
+        "F6": "task_success_rate"
+      },
+      "fixtures": "fixtures/core_mini.jsonl",
+      "size": {
+        "instances": 204,
+        "note": "eval/datasets/core/cases.core.jsonl；fixtures/core_mini.jsonl 是 6 条离线样例"
+      },
+      "notes": "自建分层用例：det/semantic/gate/security/e2e + reviewer 回放 + F1 探针。",
+      "verification": "local"
+    },
+    {
+      "name": "swebench_verified",
+      "adapter": "swebench",
+      "kind": "external",
+      "role": "primary",
+      "license": "MIT",
+      "status": "approved",
+      "quality_grade": "A",
+      "capabilities": {
+        "F1": 1.0,
+        "F4": 1.0,
+        "F5": 1.0
+      },
+      "primary_metrics": {
+        "F1": "probe_accuracy",
+        "F4": "resolve_rate",
+        "F5": "pass_to_pass_rate"
+      },
+      "snapshot_required": true,
+      "snapshot_root": "snapshots",
+      "image": "codeguard-sandbox-python:3.12",
+      "test_command": "python -m pytest -q",
+      "instances_file": "swebench_verified/instances.jsonl",
+      "manifest_file": "swebench_verified/manifest.json",
+      "fixtures": "fixtures/swebench_sample.jsonl",
+      "repo_url_template": "https://github.com/{repo}.git",
+      "size": {
+        "instances": 500,
+        "disk_gb": 20,
+        "note": "500 条人工验证任务；按 repo@commit 复用快照"
+      },
+      "notes": "FAIL_TO_PASS / PASS_TO_PASS；F1 由补丁路径探针提供；先跑 patch_source=gold 证明 harness，再跑 system。",
+      "verification": "pending"
+    },
+    {
+      "name": "swebench_lite",
+      "adapter": "swebench",
+      "kind": "external",
+      "role": "primary",
+      "license": "MIT",
+      "status": "approved",
+      "quality_grade": "B",
+      "capabilities": {
+        "F1": 1.0,
+        "F4": 0.8,
+        "F5": 0.8
+      },
+      "primary_metrics": {
+        "F1": "probe_accuracy",
+        "F4": "resolve_rate",
+        "F5": "pass_to_pass_rate"
+      },
+      "snapshot_required": true,
+      "snapshot_root": "snapshots",
+      "image": "codeguard-sandbox-python:3.12",
+      "test_command": "python -m pytest -q",
+      "instances_file": "swebench_lite/instances.jsonl",
+      "manifest_file": "swebench_lite/manifest.json",
+      "fixtures": "fixtures/swebench_sample.jsonl",
+      "repo_url_template": "https://github.com/{repo}.git",
+      "size": {
+        "instances": 300,
+        "disk_gb": 12
+      },
+      "notes": "SWE-bench 的轻量子集，用于快速回归；与 Verified 有样本重叠，评分前必须去重。",
+      "verification": "pending"
+    },
+    {
+      "name": "swebench_pro",
+      "adapter": "swebench",
+      "kind": "external",
+      "role": "primary",
+      "license": "UNKNOWN",
+      "status": "candidate",
+      "quality_grade": "B",
+      "capabilities": {
+        "F4": 1.0,
+        "F5": 1.0
+      },
+      "primary_metrics": {
+        "F4": "resolve_rate",
+        "F5": "pass_to_pass_rate"
+      },
+      "snapshot_required": true,
+      "instances_file": "swebench_pro/instances.jsonl",
+      "manifest_file": "swebench_pro/manifest.json",
+      "notes": "复杂长周期任务；公开集规模与许可证待核验，默认不进入分母。",
+      "verification": "pending"
+    },
+    {
+      "name": "multi_swe_bench",
+      "adapter": "swebench",
+      "kind": "external",
+      "role": "primary",
+      "license": "UNKNOWN",
+      "status": "candidate",
+      "quality_grade": "B",
+      "capabilities": {
+        "F4": 0.6,
+        "F5": 0.6
+      },
+      "primary_metrics": {
+        "F4": "resolve_rate",
+        "F5": "pass_to_pass_rate"
+      },
+      "snapshot_required": true,
+      "instances_file": "multi_swe_bench/instances.jsonl",
+      "manifest_file": "multi_swe_bench/manifest.json",
+      "notes": "多语言扩展；当前系统只完整支持 Python，先作扩展证据。",
+      "verification": "pending"
+    },
+    {
+      "name": "bugsinpy",
+      "adapter": "bugsinpy",
+      "kind": "external",
+      "role": "primary",
+      "license": "UNKNOWN",
+      "status": "candidate",
+      "quality_grade": "A",
+      "capabilities": {
+        "F2": 1.0,
+        "F4": 0.8,
+        "F5": 0.8
+      },
+      "primary_metrics": {
+        "F2": "localization_accuracy",
+        "F4": "resolve_rate",
+        "F5": "pass_to_pass_rate"
+      },
+      "snapshot_required": true,
+      "snapshot_root": "snapshots",
+      "image": "codeguard-sandbox-python:3.12",
+      "test_command": "python -m pytest -q",
+      "instances_file": "bugsinpy/instances.jsonl",
+      "manifest_file": "bugsinpy/manifest.json",
+      "fixtures": "fixtures/bugsinpy_sample.jsonl",
+      "size": {
+        "instances": 500,
+        "note": "规模以官方发布为准（待核验）"
+      },
+      "notes": "Python 真实缺陷；F2 用候选补丁变更路径 ∩ gold 补丁路径；项目/环境/测试命令映射需按 checkout 实际核查。",
+      "verification": "pending"
+    },
+    {
+      "name": "reviewbench",
+      "adapter": "reviewbench",
+      "kind": "external",
+      "role": "primary",
+      "license": "UNKNOWN",
+      "status": "candidate",
+      "quality_grade": "A",
+      "capabilities": {
+        "F1": 0.4,
+        "F2": 1.0,
+        "F3": 1.0
+      },
+      "primary_metrics": {
+        "F2": "localization_accuracy",
+        "F3": "f1"
+      },
+      "instances_file": "reviewbench/instances.jsonl",
+      "manifest_file": "reviewbench/manifest.json",
+      "fixtures": "fixtures/reviewbench_sample.jsonl",
+      "notes": "仓库存在性、许可证与 gold findings 字段待核验；核验前只作定性证据。",
+      "verification": "pending"
+    },
+    {
+      "name": "swe_care",
+      "adapter": "reviewbench",
+      "kind": "external",
+      "role": "primary",
+      "license": "UNKNOWN",
+      "status": "candidate",
+      "quality_grade": "A",
+      "capabilities": {
+        "F1": 0.6,
+        "F2": 1.0,
+        "F3": 1.0
+      },
+      "primary_metrics": {
+        "F2": "localization_accuracy",
+        "F3": "f1"
+      },
+      "instances_file": "swe_care/instances.jsonl",
+      "manifest_file": "swe_care/manifest.json",
+      "fixtures": "fixtures/reviewbench_sample.jsonl",
+      "notes": "SWE-CARE / CodeFuse-CR-Bench：reference comments 作 gold；许可证与字段待核验，核验前排 candidate。",
+      "verification": "pending"
+    },
+    {
+      "name": "devign",
+      "adapter": "security",
+      "kind": "external",
+      "role": "primary",
+      "license": "UNKNOWN",
+      "status": "candidate",
+      "quality_grade": "B",
+      "capabilities": {
+        "F2": 0.6,
+        "F3": 0.4
+      },
+      "primary_metrics": {
+        "F2": "f1",
+        "F3": "severity_macro_f1"
+      },
+      "instances_file": "devign/instances.jsonl",
+      "manifest_file": "devign/manifest.json",
+      "fixtures": "fixtures/security_sample.jsonl",
+      "notes": "函数级漏洞数据；需要合成 base/head 变更，不能直接当 PR 级审查。",
+      "verification": "pending"
+    },
+    {
+      "name": "primevul",
+      "adapter": "security",
+      "kind": "external",
+      "role": "primary",
+      "license": "UNKNOWN",
+      "status": "candidate",
+      "quality_grade": "B",
+      "capabilities": {
+        "F2": 0.6,
+        "F3": 0.4
+      },
+      "primary_metrics": {
+        "F2": "f1",
+        "F3": "severity_macro_f1"
+      },
+      "instances_file": "primevul/instances.jsonl",
+      "manifest_file": "primevul/manifest.json",
+      "fixtures": "fixtures/security_sample.jsonl",
+      "notes": "漏洞识别与分类；同样需要合成变更，核验前只作定性证据。",
+      "verification": "pending"
+    }
+  ]
+}

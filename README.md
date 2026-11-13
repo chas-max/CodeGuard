@@ -1,126 +1,200 @@
-# CodeGuard-Agent · 基于 LangGraph 与沙箱自愈的 Repo 自动化 Bug 修复与单测生成 Multi-Agent 系统
+# CodeGuard
 
-> 本项目由 AI 漫剧多 Agent 制作系统（12 节点 LangGraph 状态机）**同构迁移改造**而来，
-> 保留 12 节点图拓扑、Keyed Reducers 幂等更新、SqliteSaver 三处 HITL 中断恢复、
-> 异常统筹节点、成本熔断与 SSE 事件流等工程底座，将"漫剧制作流水线"替换为
-> **"异常发现 → 方案规划 → 执行处理 → 结果检测"** 的 Bug 修复四能力闭环。
-> 改造设计文档见 [PATH_A_CODING_AGENT_PLAN.md](PATH_A_CODING_AGENT_PLAN.md)。
+基于 **LangGraph + Docker + 多 Agent** 的内部 PR 审查系统：
 
-## 四能力闭环
+> 对任意内部变更做审查：按变更风险分级、找出问题、给出证据、必要时让修复 Agent 生成补丁并在 Docker 里验证，最后由唯一审查 Agent 做整体审查；按 tier 收集人工审批后，满足确定性门控才合并。
 
-| 能力 | 承载节点/模块 | 机制 |
-|---|---|---|
-| ① 自动发现异常 | `machine_review` + `sandbox_execute` | 确定性静态门控（AST 语法/高危调用/冻结签名契约，毫秒级）+ 沙箱 F2P/P2P 测试失败与 Traceback 捕获 |
-| ② 规划处理方案 | `director_plan` + `director_resolve` | AST 调用图两遍扫描 → 词法+符号+1-hop 调用链传播定位 Top-K 故障文件 → 冻结符号契约圣经（Symbol Contract Bible）→ 异常统筹路由 retry/downgrade/skip/escalate |
-| ③ 执行处理 | `write_draft` + `sandbox_execute` | Search-Plan-Execute-Reflect 四阶段补丁编写 + 逐槽位 ReAct 沙箱自愈（Act→Observe→Think→Retry，Traceback 驱动定向重写） |
-| ④ 检测处理结果 | 沙箱三重门控 | **F2P 复现测试（Red 锚定态先行验证）+ P2P 回归测试 + 分支覆盖率** 全确定性判定，交付零退化 `fix.patch`（可 `git apply`，含新增单测） |
+也支持 `mode: external`：对不可信 PR 保留「必须复现 bug」的历史门禁。
 
-## 12 节点状态流转
+## 核心流程（internal / change profile）
 
 ```
-understand(故障解析) → clarify_ask(HITL#1 澄清) → director_plan(AST定位+契约冻结)
-→ write_draft(四阶段补丁) → machine_review(静态门控)
-  ├─ 不通过 → write_draft（封顶 3 次）
-  ├─ 工具级异常 → director_resolve（异常统筹，封顶 3 次硬检查）
-  └─ 通过 → director_supervise(Tech Lead 两阶段自省) → human_review(HITL#2 Diff 预览)
-→ build_anchors(生成 F2P 复现测试, 沙箱验证 Red 态) → confirm_anchors(HITL#3 确认锚点)
-→ sandbox_execute(逐槽位 ReAct 沙箱自愈 + 三重门控)
-  ├─ F2P全过 + P2P零退化 → END（fix.patch + 覆盖率报告）
-  ├─ 未超上限 → sandbox_execute（封顶 2 轮）
-  └─ 沙箱环境异常 → director_resolve
+GitHub PR 事件 / API / CLI
+  → 预检（PR、base/head、仓库地图、base 策略、review 指南、Docker 健康、风险分级）
+  → 混合检测（确定性静态/规则/API 契约/测试守卫 + LLM 跨文件语义）
+      → findings 生命周期对账（open/resolved）
+      → blocking 语义 finding 两票复核（只降不升）
+  → 意图验证（change：解析 PR 目标与验收证据，advisory）
+  → Docker 验证（按策略跑检查/回归）
+  → 唯一 reviewer 整体审查（guidance + nit 上限；第二轮起只审增量 diff）
+  → 按 tier 收集人工审批（T0 0、T1 1、T2 2；审批绑定 commit）
+  → 确定性 merge gate → 合并
+  → 发布 review + 写 job record / 指标
 ```
 
-6 个独立防死循环计数器（clarify/machine/human/anchor/prod/resolve）+ `budget.py` 成本熔断，
-超限统一走 `escalate` 确定性终止并保留产物。
+`bugfix` profile 额外要求「base 上复现测试失败」，走的是历史流程。
 
-## 评测基准：Micro-SWE-Bench（50 题确定性沙箱）
+## 设计要点
 
-**以下数字由 `python -m eval.run_benchmark --suite 50 --out reports/` 真实跑测产出**
-（seed=20260101，11 类 Bug 模板 × seeded 变分，全程零 LLM 调用、完全可复现）：
-
-| 指标 | Baseline(单轮) | +AST定位(单轮) | +AST定位+多轮自愈 |
-|---|---|---|---|
-| Localization Recall@3 | 0% | **100%** | 100% |
-| One-shot Pass@1 | 64% | 64% | 64% |
-| **Resolved Rate** | 64% | 64% | **100%（自愈净增益 +36%）** |
-| P2P Regression Rate | 18% | 18% | **0%（零退化交付）** |
-
-详细分类统计见 [reports/benchmark_report.md](reports/benchmark_report.md)。
+- **profile 分裂**：`change` 面向任意变更（feature/refactor/docs/chore），`bugfix` 面向带复现声明的修复；由 API/CLI、`codeguard:bugfix` label 或 `mode: external` 决定。
+- **确定性风险分级**：`T0/T1/T2` 由路径与改动量决定，作者身份只能抬高等级；tier 决定审批人数与审查深度。
+- **确定性检测 + LLM 语义检测**：语法、secret、路径、测试完整性、API 签名由确定性规则裁决；`semantic_detector` 补足跨文件契约、数据流、并发/资源生命周期等盲区。确定性结论优先。
+- **唯一审查 Agent**：只有 `reviewer`。两票复核只判断「这条 finding 是否为真」，不产出 verdict，不构成第二个终审。
+- **findings 生命周期**：`open/resolved` 对账；只有 open 且 blocking 才阻塞合并、才进入修复；修复按类聚合。
+- **审查收敛**：第 2 轮只审增量 diff；达到轮次上限转人工并要求改方案；同类问题不重复提；评论用 marker 去重。
+- **发布与指标**：结论以 review + inline 评论发布（机器人不冒充人工批准）；每次运行写 `reports/jobs/<job_id>.json`，`codeguard stats` 聚合 human actions / 审批延迟 / 轮次 / precision / 成本。
+- **协调器**：`Coordinator` 在阶段内并行调度只读任务，统一超时、取消、预算与并发上限；LangGraph 负责状态机与断点。
+- **Docker 隔离**：测试容器 `network=none`、只读根、非 root、cap-drop ALL、无 Docker socket、无宿主密钥；PR 代码不在宿主机执行。
+- **安全合并**：走 GitHub PR merge API，校验 `head_sha`、树哈希、mergeable、必需检查、分支保护；高风险路径强制人工；不直接 push 目标分支。
 
 ## 快速开始
 
 ```bash
+# 0. 安装（推荐虚拟环境）
+pip install -e .
+
 # 1. 配置
-copy .env.example .env   # 填入 DEEPSEEK_API_KEY / DASHSCOPE_API_KEY
+copy .env.example .env        # 填 LLM key；GitHub 可在启动后由控制台接入
 
-# 2. Web UI（Gradio，端口 7861）
-python codeguard_app.py
+# 1.1 GitHub App（推荐，无需手填 token）
+#   a) 起内网穿透：cloudflared tunnel --url http://127.0.0.1:8002
+#   b) 打开 http://127.0.0.1:8002/ui/#/settings，按三步向导填地址 / 创建 App / 安装仓库
+#   c) 凭据写入 data/github-app.json（0600），installation token 自动续期
+#   详见 docs/github-app.md；CLI 与离线评测仍可用 GITHUB_TOKEN
 
-# 3. CLI
-python codeguard_app.py --cli --repo D:\path\to\buggy_repo --issue "describe the bug or paste traceback"
+# 2. 构建沙箱镜像（需要 Docker daemon）
+docker build -f dockerfiles/sandbox/python.Dockerfile -t codeguard-sandbox-python:3.12 .
 
-# 4. FastAPI + SSE 服务（端口 8001）
-python -m codeguard.server
-#   POST /api/jobs        {"issue": "...", "repo_dir": "..."}
-#   GET  /api/jobs/{id}          # 轮询快照
-#   GET  /api/jobs/{id}/stream   # SSE 实时事件
-#   POST /api/jobs/{id}/resume   # HITL 恢复（clarify/human_review/confirm_anchors）
+# 3. 本地 dry-run（无需 GitHub；测试仍需要 Docker daemon）
+python codeguard_app.py review --local D:\path\to\repo --base-root D:\path\to\base \
+    --changed src/calc.py tests/test_calc.py --title "fix: zero divide" --dry-run
 
-# 5. 运行评测基准
-python -m eval.run_benchmark --suite 50 --out reports/
+#    作者侧自检（pre-push）：只审相对 main 的改动，有 blocking 就返回 1
+python -m codeguard review --local . --diff-from origin/main --fail-on-blocking
 
-# 6. 测试（全部 mock，无需 API key；沙箱类测试真实跑 pytest 子进程）
-python -m pytest tests/ -v
+# 4. 启动 webhook / API 服务
+python codeguard_app.py serve --port 8002
+# POST /webhooks/github           GitHub webhook
+# POST /api/reviews               手动触发（支持 local_repo）
+# GET  /api/jobs/{id}             快照
+# GET  /api/jobs/{id}/stream      SSE
+# POST /api/jobs/{id}/resume      人工审批恢复（含 approver / finding_outcomes）
+# GET  /api/health                配置 / Docker 状态
+
+# 5. 测试（无 API key / 无 Docker 也可全绿）
+python -m pytest -q
+python -m pytest -m docker      # Docker 集成测试，daemon 不可用自动 skip
+
+# 6. 离线评测（零 LLM、零网络）
+python -m eval.run_pr_eval --out reports/pr_eval
+python -m eval.run_reviewer_eval --out reports/reviewer_eval
+
+# 7. 指标与事后归因
+python -m codeguard stats --dir reports/jobs --out reports/metrics
+python -m codeguard incidents sync --repo owner/name --sha <merge-sha> --fixture
 ```
 
-**交付产物**（`data/codeguard_output/<job_id>/`）：
-- `fix.patch` — 标准 Unified Diff，可直接 `git apply`（代码修复 + 新增 F2P 单测）
-- `coverage_report.md` — 分支覆盖率与门控记录
-- `sandbox_log.md` — 逐槽位自愈过程与 Traceback 审计
+## 评测平台（bench）
 
-## 工程底座（自漫剧系统同构保留）
+在旧五维 scorecard 之上新增六维功能评分（`eval/bench/`），默认离线可跑；
+旧 `det/semantic/gate/security/e2e` 语义不变。
 
-| 底座 | 实现 |
-|---|---|
-| 状态图编排 | LangGraph `StateGraph`，12 节点 + 7 条件路由，节点签名 `fn(state, ctx)` 经 `functools.partial` 注入容器 |
-| 幂等更新 | `merge_patch_units`（按 unit_id）/ `merge_symbol_contracts`（按 symbol_id）Keyed Reducers，支持断点恢复与单槽位增量重试 |
-| HITL 中断 | `langgraph.types.interrupt` × 3（澄清/Diff审查/锚点确认），`SqliteSaver` 持久化断点，进程重启可恢复 |
-| 异常统筹 | `open_issues` 覆盖式路由信号 + `agent_issues` append-only 审计日志（修复了原系统 append reducer 无法清空导致的 resolve 死循环） |
-| 成本治理 | `track_usage` token 采集 → `budget_events` → `budget_max_cny` 熔断；6 计数器独立封顶 |
-| 可观测 | SSE 事件流（progress/issue_parsed/plan_ready/static_gate_done/anchors_ready/unit_progress/patch_done/interrupt/error）+ 实时进度 |
-| 稳定性 | LLM 请求 `request_timeout`（防单请求挂起）、沙箱 `timeout=30s`（防死循环）、后台任务异常回调（防 job 静默卡死） |
+```bash
+# 默认只跑外部主分数据集；没有已物化外部数据时输出 NO_EXTERNAL_EVIDENCE
+python -m eval.bench run --profile external --out reports/bench_ext
 
-## 技术栈
+# 自建回归：只跑 core，报告标 SELF_BUILT_ONLY
+python -m eval.bench run --profile supplement --dataset core --fixtures \
+  --limit 8 --out reports/bench_demo
 
-Python 3.11+ · LangGraph 1.x（`StateGraph`/`SqliteSaver`/`interrupt`）· Pydantic v2 ·
-标准库 `ast`（符号契约/调用图）· pytest & pytest-cov（沙箱三重门控）·
-DeepSeek/Qwen/MiMo（OpenAI 兼容，角色化路由）· FastAPI + SSE · Gradio
+# 两边都跑，但报告分栏，不混算
+python -m eval.bench run --profile full --out reports/bench_full
 
-## 目录结构
+# 从已有观测重算 / 重新渲染报告
+python -m eval.bench score --input reports/bench_demo
+python -m eval.bench report --input reports/bench_demo
+
+# 数据集登记、物化状态与离线校验（数据本体不提交）
+python -m eval.bench fetch --list
+python -m eval.bench fetch --status
+python -m eval.bench fetch --verify
+
+# 物化公开基准切片（联网只发生在 fetch）
+python -m eval.bench fetch --dataset swebench_verified --source <本地JSONL或HF直链> --limit 10
+python -m eval.bench fetch --dataset swebench_verified --snapshot --limit 5
+```
+
+评分口径按三轨输出：`primary`（外部已核准数据集，F1–F5）给出 `S_primary`，
+`supplementary`（自建集）给出标 `SELF_BUILT_ONLY` 的回归分，F6 单独给
+`S_integration`。F1 是门禁维（不占权重）；F2/F3/F4/F5 在轨道内归一化为
+`0.2778/0.2778/0.2778/0.1667`。任意维度缺失时仍输出其余 F 的分数，但
+`total = null`（`PARTIAL`），不再整份报告判 `INVALID`；自建分永远不进入主分，
+也不与主分相加。门槛（floors/regression）只写进报告，不改变退出码。
+详见 [eval/bench/README.md](eval/bench/README.md)。
+
+## 控制台（前端）
+
+`web/` 是操作台前端（Vite + React + TS），构建后由后端在 `/ui` 托管：
+
+```bash
+cd web && npm install && npm run build
+cd .. && python codeguard_app.py serve --port 8002   # http://127.0.0.1:8002/ui/
+```
+
+覆盖：仓库切换、PR 列表与定时查看、一键触发审查、11 节点全链路追踪与各节点结果、HITL 审批/驳回与 findings 处置。
+新增接口在 `src/codeguard/console.py`（`/api/repos`、`/api/pulls`、`/api/jobs`、`/api/jobs/{id}/trace`、`/api/watch`）。
+详见 [docs/console.md](docs/console.md)。
+
+## 目录
 
 ```
-├── codeguard_app.py                  # 统一入口：Gradio UI / CLI
-├── eval/
-│   ├── micro_swe_bench.py            # 11 类 Bug 模板 × seeded 变分 = 50 题确定性套件
-│   └── run_benchmark.py              # 评测 CLI：三组消融，落盘 JSON+Markdown
-├── src/codeguard/
-│   ├── coding_agent/                 # 四能力核心引擎
-│   │   ├── models.py                 #   强类型模型 + Keyed Reducers
-│   │   ├── ast_analyzer.py           #   AST 符号提取 + Top-K 故障文件定位
-│   │   ├── static_guard.py           #   确定性静态门控（语法/高危调用/冻结签名）
-│   │   ├── patch_writer.py           #   上下文裁剪 + Unified Diff 合成
-│   │   └── sandbox_runner.py         #   隔离沙箱 F2P/P2P/覆盖率 + Red 验证 + 宿主隔离校验
-│   ├── nodes/pipeline_nodes.py       # 12 节点 + 7 条件路由
-│   ├── prompts/                      # 各 Agent 提示词（纯函数）
-│   ├── graph.py / state.py / runtime.py / server.py / config.py / llm.py
-│   └── budget.py / errors.py / retry.py
-├── tests/                            # 57 项测试（FakeLLM mock + 真实沙箱子进程）
-└── reports/benchmark_report.{json,md}
+src/codeguard/
+├── models.py                 # Pydantic 领域模型（Finding/Approval/RiskTier…）
+├── config.py                 # Settings + 启动校验
+├── state.py                  # ReviewState + reducers
+├── graph.py                  # 11 节点 LangGraph
+├── runtime.py / server.py / cli.py
+├── engine/                   # 仓库地图、diff、静态、规则、策略、API 契约、测试守卫、
+│                             # 补丁、混合合并、风险分级(tier)、findings 生命周期、
+│                             # 审查指南(guidance)、指标、事故归因
+├── orchestration/            # Coordinator 并行 DAG、JobScheduler
+├── sandbox/                  # Docker / fake 后端、工作区、健康检查、运行器
+├── github/                   # REST 客户端、webhook 验签、合并门控、review 发布
+├── agents/                   # issue_verifier / semantic_detector / finding_verifier /
+│                             # reviewer / fixer
+├── prompts/                  # 纯函数提示词
+└── nodes/                    # 节点与路由
+dockerfiles/sandbox/python.Dockerfile
+web/                          # 控制台前端（Vite + React + TS，产物挂到 /ui）
+policy/default.yml
+eval/                         # 夹具、确定性评测、reviewer 离线评测
+tests/                        # fake LLM/GitHub/Sandbox + e2e
 ```
+
+## 策略
+
+默认策略在 `policy/default.yml`；仓库可在 base 分支放 `.codeguard/policy.yml` 覆盖。
+**只读取 base 分支策略**，PR 对策略的修改不会生效，并会被 `POL-001` 标记。
+
+关键字段：
+
+- `mode`：`internal`（默认）或 `external`。
+- `profiles`：默认 profile 与允许的变更类型。
+- `tiers`：`rules`（路径/行数）、`min_human_approvals`、`require_non_author_for`、`force_human_paths`。
+- `review`：`guidance_path`、`max_nits`、`depth_by_tier`、`max_findings_verified`。
+- `merge`：`allow_zero_human`、`queue.update_branch_on_stale`。
+- `trusted_authors`：可信作者 login 列表（`team:` 前缀暂不支持）。
+- `limits` / `gates` / `protected_paths` / `high_risk_paths` / `sandbox` / `rules.disable`。
+
+策略 schema 非法时 fail closed，转人工，不合并。
 
 ## 安全红线
 
-- 沙箱执行在 `tempfile.TemporaryDirectory` 隔离副本中进行，宿主仓库经全树哈希前后校验，绝无污染
-- 生成的补丁代码静态拦截 `eval` / `exec` / `os.system` / `shutil.rmtree` 等高危调用
-- 冻结符号契约：公共函数签名一经 `director_plan` 冻结，任何破坏签名的补丁在静态门控即被拦截
-- 所有评测指标真实跑测落盘，无任何硬编码数字
+- 不在宿主机执行 PR 代码；测试只在 Docker 中运行。
+- 测试阶段强制 `network=none`，不挂 Docker socket、宿主根目录、SSH key、`.env`。
+- 不把 PR 文本当指令；Agent 工具受白名单与能力收敛控制（检索只读副本、执行只在 Docker 沙箱、写只给 fixer），输出经 Pydantic 校验。
+- secret 命中即 blocking；评论/日志不输出 secret 原文。
+- 任何合并都必须通过 `merge_gate`；不直接 push 受保护分支。
+- 修复补丁必须能 `git apply --check`，且不得通过删测试/跳过测试/改策略通过。
+- **internal 模式放松的是审批，不是输入隔离**；机器人审批永远不替代人类审批。
+
+## 已知边界
+
+- 首版完整支持 Python 仓库；其他语言走通用检测 + 测试执行，必要转人工。
+- `external` 模式仍要求 PR 为 bugfix；`internal` 支持任意变更类型。
+- fork PR 不能自动推送修复，只发布建议补丁。
+- 零人工合并默认关闭，需要 `merge.allow_zero_human: true` 且已有回滚/监控。
+- `findings` 从 reducer 改为权威快照：升级后建议更换 `CHECKPOINT_PATH`，不要在旧断点上恢复进行中的 job。
+- `merge.queue.update_branch_on_stale` 与 `GitHubClient.update_branch` 已就位，但**尚未接入自动重跑**；base 移动目前按 `STALE` 转人工。
+- `team:org/team` 可信作者需要 GitHub team API，当前按不可信处理。
+- 当前开发机若未启动 Docker daemon，真实沙箱测试会 skip；生产启动时 Docker 不可用会 fail-fast/登记 infra 失败。

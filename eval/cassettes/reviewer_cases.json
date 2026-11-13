@@ -1,0 +1,61 @@
+[
+  {
+    "name": "clean_change",
+    "response": {
+      "verdict": "approve",
+      "confidence": 0.9,
+      "summary": "0 critical, 0 major, 0 minor；未发现 blocking 问题",
+      "findings": [],
+      "fix_instructions": [],
+      "residual_risks": []
+    },
+    "expected_blocking": []
+  },
+  {
+    "name": "real_null_deref",
+    "response": {
+      "verdict": "request_changes",
+      "confidence": 0.85,
+      "summary": "1 critical",
+      "findings": [
+        {
+          "category": "correctness",
+          "severity": "critical",
+          "blocking": true,
+          "path": "src/a.py",
+          "line": 10,
+          "message": "user 可能为 None",
+          "evidence": "src/a.py:10 user.name",
+          "suggestion": "读取前判空",
+          "introduced_by_pr": true
+        }
+      ],
+      "fix_instructions": ["判空"],
+      "residual_risks": []
+    },
+    "expected_blocking": ["src/a.py:10"]
+  },
+  {
+    "name": "style_only_noise",
+    "response": {
+      "verdict": "request_changes",
+      "confidence": 0.6,
+      "summary": "0 critical, 0 major, 2 nit",
+      "findings": [
+        {
+          "category": "style",
+          "severity": "major",
+          "blocking": true,
+          "path": "src/a.py",
+          "line": 3,
+          "message": "命名不符合规范",
+          "evidence": "src/a.py:3",
+          "introduced_by_pr": true
+        }
+      ],
+      "fix_instructions": [],
+      "residual_risks": []
+    },
+    "expected_blocking": []
+  }
+]

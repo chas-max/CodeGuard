@@ -1,192 +1,242 @@
-"""LangGraph 全图状态 schema 与 reducers（CodeGuard-Agent 版）。
+"""LangGraph 全图状态 schema 与 reducers。
 
-单一 CodeGuardState 贯穿全图。与原漫剧 WorkflowState 的同构映射：
-- brief            -> issue_context（故障现象解析产物，顶层只读）
-- character_bible  -> symbol_bible（AST 符号契约圣经，merge_symbol_contracts per-key merge）
-- shots            -> patch_units（补丁槽位，merge_patch_units 按 unit_id keyed merge）
-- video_path       -> patch_path + coverage_report_path
-
-四能力闭环关键字段：
-- agent_issues：append-only 审计日志（所有异常留痕）
-- open_issues：**无 reducer 的普通字段，节点返回即整体覆盖**——这是对原系统的关键修复：
-  原版 director_resolve 返回 "agent_issues": [] 试图清空 append_list reducer 字段，
-  实际是无效操作（空列表追加等于没清），导致 issue 永久累积、resolve 死循环。
-  现在路由只看 open_issues，director_resolve 处理完返回 {"open_issues": []} 即真正清空。
-- f2p_tests / p2p_tests：冻结的测试锚点（TDD Red 态 Ground Truth）
-
-六个独立计数器（防死循环，与原系统同名同义）：
-clarification_round / machine_revision_count / human_revision_count / anchor_round
-/ production_attempt_count（沙箱自愈轮次）/ director_resolve_count
+原则：
+- 所有节点可能写入的 key 必须在此声明；LangGraph 会静默丢弃未声明键。
+- job 级可变状态一律放 state，节点容器不持有跨 job 标志。
+- 日志类列表使用有界 append，避免 SqliteSaver checkpoint 无限膨胀。
 """
 from __future__ import annotations
 
-from typing import Annotated, Optional
+import datetime
+from typing import Annotated, Optional, TypedDict
 
-from typing_extensions import TypedDict
+from .models import PullRequestContext
 
-from .coding_agent.models import merge_patch_units, merge_symbol_contracts
-
-__all__ = [
-    "CodeGuardState",
-    "IssueContext",
-    "PatchUnitDict",
-    "initial_state",
-    "merge_patch_units",
-    "merge_symbol_contracts",
-    "append_list",
-]
+MAX_LOG_ITEMS = 200
 
 
-def append_list(left: list, right: list) -> list:
-    """单调追加（用于日志/事件流/审计）。"""
-    return (left or []) + (right or [])
+def _bounded_append(left: list | None, right: list | None, max_items: int) -> list:
+    merged = (left or []) + (right or [])
+    return merged[-max_items:]
 
 
-# ---- 子结构 TypedDict ----
+def append_bounded(left: list | None, right: list | None) -> list:
+    """单调追加，只保留最近 MAX_LOG_ITEMS 条（LangGraph reducer 必须是 2 参数）。"""
+    return _bounded_append(left, right, MAX_LOG_ITEMS)
 
 
-class IssueContext(TypedDict, total=False):
-    """understand 节点产出的故障解析上下文（同构于漫剧 Brief）。"""
-
-    title: str  # 问题一句话标题
-    symptom: str  # 症状描述
-    stack_trace: str  # 报错堆栈（若有）
-    suspected_modules: list[str]  # 疑似受影响模块
-    repro_steps: list[str]  # 复现步骤
-    env_hints: str  # 环境线索（Python 版本/依赖等）
-    missing_info: list[str]  # 缺失的关键信息（驱动 clarify_ask 追问）
-    completeness: str  # clear | partial | unclear
+def merge_findings(left: list[dict] | None, right: list[dict] | None) -> list[dict]:
+    """按 finding.id 幂等合并；后写入覆盖同 id。"""
+    by_id: dict[str, dict] = {}
+    for item in (left or []) + (right or []):
+        if not isinstance(item, dict):
+            continue
+        key = item.get("id") or f"{item.get('rule_id', '')}:{item.get('path', '')}:{item.get('line', '')}"
+        by_id[key] = {**by_id.get(key, {}), **item}
+    return list(by_id.values())
 
 
-class PatchUnitDict(TypedDict, total=False):
-    """state.patch_units 的槽位条目（PatchUnit 的 dict 形态，供 reducer 合并）。"""
-
-    unit_id: str
-    target_file: str
-    test_file: str
-    issue_hypothesis: str
-    patched_code: str
-    git_diff: str
-    status: str  # pending | writing | testing | passed | failed | skipped
-    attempts: int
-    f2p_passed: bool
-    p2p_passed: bool
-    last_traceback: str
+def merge_files(left: list[dict] | None, right: list[dict] | None) -> list[dict]:
+    """按 path 幂等合并文件变更。"""
+    by_path: dict[str, dict] = {}
+    for item in (left or []) + (right or []):
+        if isinstance(item, dict) and item.get("path"):
+            by_path[item["path"]] = {**by_path.get(item["path"], {}), **item}
+    return list(by_path.values())
 
 
-# ---- 主状态 ----
+class ReviewState(TypedDict, total=False):
+    # 身份 / profile
+    job_id: str
+    delivery_id: str
+    repo: str
+    pr_number: int
+    base_ref: str
+    base_sha: str
+    head_sha: str
+    author: str
+    is_fork: bool
+    pr_title: str
+    pr_body: str
+    profile: str
+    started_at: str
+    finished_at: str
 
+    # 预检 / 工作区 / 风险分级
+    pr_context: dict
+    changed_files: Annotated[list[dict], merge_files]
+    diff_text: str
+    diff_stats: dict
+    repo_map: dict
+    policy: dict
+    policy_sha: str
+    risk_tier: Optional[dict]
+    review_guidance: str
+    resolved_branch: str
+    repo_root: str
+    base_root: str
+    workspace_dir: str
+    dry_run: bool
 
-class CodeGuardState(TypedDict, total=False):
-    # 顶层
-    job_id: str  # = thread_id，checkpointer 寻址键
-    user_input: str  # 原始 issue 文本（GitHub Issue / 报错堆栈 / 待测模块描述）
-    repo_dir: str  # 待修复仓库根目录（绝对路径）
-    messages: Annotated[list, append_list]
-    clarification_qa: Annotated[list[dict], append_list]
-    clarification_round: int  # 上限 max_clarify
-    issue_context: Optional[IssueContext]
+    # 混合检测
+    deterministic_report: Optional[dict]
+    semantic_report: Optional[dict]
+    semantic_unavailable: bool
+    hybrid_scan_report: Optional[dict]
+    findings: list[dict]
+    finding_history: Annotated[list[dict], append_bounded]
+    blocking_findings: list[dict]
+    candidate: str  # pr | fix
 
-    # 对话通道（复用原系统聊天式交互机制）
-    conversation_history: Annotated[list[dict], append_list]
-    conversation_summary: Optional[str]
-    user_revision_request: Optional[str]
-    chat_mode: str  # briefing（故障澄清中）| revision（补充信息）| idle
+    # 问题 / 意图验证
+    claim: Optional[dict]
+    issue_verification: Optional[dict]
+    intent_verification: Optional[dict]
+    repro_tests: list[str]
+    repro_evidence: Annotated[list[dict], append_bounded]
 
-    # 异常通道：四能力闭环的枢纽
-    agent_issues: Annotated[list[dict], append_list]  # append-only 审计日志
-    open_issues: list[dict]  # 路由信号（覆盖式，director_resolve 处理后清空）
-    director_resolve_count: int  # 上限 max_resolve（硬编码检查）
-    director_resolution: Optional[dict]  # {action, target_node, strategy, escalate_reason}
+    # Docker 验证
+    validation_report: Optional[dict]
+    reviewed_sha: str
+    reviewed_tree_hash: str
 
-    # 规划产物（四能力②）
-    plan: Optional[dict]  # {plan_summary, repair_strategy: [...]}
-    located_files: list[str]  # AST 定位的 Top-K 疑似故障文件
-    symbol_bible: Annotated[dict, merge_symbol_contracts]  # symbol_id -> 契约卡片
+    # 审查（唯一 reviewer）
+    review_decision: Optional[dict]
+    review_round: int
+    review_round_mode: str
+    escalation_reason: str
 
-    # 补丁产物（四能力③）
-    patch_outline: Optional[str]
-    patch_units: Annotated[list[dict], merge_patch_units]
+    # 修复
+    fix_round: int
+    fix_patch: str
+    fix_files: list[str]
+    fix_tree_hash: str
+    fix_pushed: bool
+    fix_remote_sha: str
+    fix_history: Annotated[list[dict], append_bounded]
 
-    # 静态门控（四能力①）
-    static_verdict: Optional[dict]  # StaticAuditVerdict dict
-    machine_revision_count: int  # 上限 max_machine
+    # 合并 / 终态
+    merge_decision: Optional[dict]
+    outcome: Optional[str]
+    merge_commit_sha: str
+    requires_human: bool
+    human_decision: Optional[dict]
+    human_approvals: list[dict]
+    finding_outcomes: dict
 
-    # 人工审核 HITL#2
-    human_decision: Optional[dict]  # {approved, feedback}
-    human_revision_count: int  # 上限 max_human
-
-    # TDD 复现测试锚定（四能力④的 Ground Truth）
-    anchor_round: int  # 上限 max_anchor
-    anchor_decision: Optional[dict]  # {approved, feedback}
-    f2p_tests: list[str]  # 冻结的复现测试节点（pytest nodeid）
-    p2p_tests: list[str]  # 冻结的回归测试节点
-    # 注意：F2P 测试代码必须进入 state schema（LangGraph 丢弃未声明键），
-    # sandbox_execute 依赖它们把复现测试写入沙箱副本。
-    f2p_test_file: str  # F2P 测试文件相对路径
-    f2p_test_code: str  # F2P 测试完整代码
-
-    # 沙箱执行（四能力③④）
-    production_attempt_count: int  # 沙箱自愈轮次，上限 max_prod
-    sandbox_result: Optional[dict]  # SandboxTestResult dict
-    patch_path: Optional[str]  # 最终交付 fix.patch
-    coverage_report_path: Optional[str]
-
-    # 控制 / 可观测 / 成本
-    production_log: Annotated[list[dict], append_list]
-    errors: Annotated[list[dict], append_list]
-    budget_events: Annotated[list[dict], append_list]
+    # 协调 / 可观测 / 成本
+    task_results: dict
+    task_events: Annotated[list[dict], append_bounded]
+    tool_events: Annotated[list[dict], append_bounded]
+    tool_calls: int
+    events: Annotated[list[dict], append_bounded]
+    agent_issues: Annotated[list[dict], append_bounded]
+    open_issues: list[dict]
+    errors: Annotated[list[dict], append_bounded]
+    budget_events: Annotated[list[dict], append_bounded]
     budget_exceeded: bool
     status: str
-    # parsing / clarifying / parsed / planning / writing / reviewing /
-    # supervising / awaiting_human / anchoring / confirming_anchors /
-    # executing / done / failed
     error: Optional[str]
-    _revision_target: Optional[str]
+    run_record: dict
+
+    # 计数器
+    verify_round: int
+    infra_retry: int
+    llm_calls: int
 
 
-def initial_state(user_input: str, job_id: str, repo_dir: str = "") -> CodeGuardState:
-    """构造图的初始状态。"""
-    return {
+# 兼容旧测试/导入的别名（重构后逐渐移除）
+CodeGuardState = ReviewState
+
+
+def initial_state(pr: PullRequestContext | dict, job_id: str, **overrides) -> ReviewState:
+    """构造图初始状态。pr 可以是模型或 dict。"""
+    ctx = pr if isinstance(pr, PullRequestContext) else PullRequestContext.model_validate(pr)
+    state: ReviewState = {
         "job_id": job_id,
-        "user_input": user_input,
-        "repo_dir": repo_dir,
-        "messages": [],
-        "clarification_qa": [],
-        "clarification_round": 0,
-        "issue_context": None,
-        "conversation_history": [],
-        "conversation_summary": None,
-        "user_revision_request": None,
-        "chat_mode": "briefing",
+        "delivery_id": "",
+        "repo": ctx.repo,
+        "pr_number": ctx.number,
+        "base_ref": ctx.base_ref,
+        "base_sha": ctx.base_sha,
+        "head_sha": ctx.head_sha,
+        "author": ctx.author,
+        "is_fork": ctx.is_fork,
+        "pr_title": ctx.title,
+        "pr_body": ctx.body,
+        "profile": ctx.profile or "",
+        "started_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "finished_at": "",
+        "pr_context": ctx.model_dump(mode="json"),
+        "changed_files": [f.model_dump(mode="json") for f in ctx.changed_files],
+        "diff_text": "",
+        "diff_stats": {},
+        "repo_map": {},
+        "policy": {},
+        "policy_sha": "",
+        "risk_tier": None,
+        "review_guidance": "",
+        "resolved_branch": "",
+        "repo_root": "",
+        "base_root": "",
+        "workspace_dir": "",
+        "dry_run": False,
+        "deterministic_report": None,
+        "semantic_report": None,
+        "semantic_unavailable": False,
+        "hybrid_scan_report": None,
+        "findings": [],
+        "finding_history": [],
+        "blocking_findings": [],
+        "candidate": "pr",
+        "claim": None,
+        "issue_verification": None,
+        "intent_verification": None,
+        "repro_tests": [],
+        "repro_evidence": [],
+        "validation_report": None,
+        "reviewed_sha": "",
+        "reviewed_tree_hash": "",
+        "review_decision": None,
+        "review_round": 0,
+        "review_round_mode": "full",
+        "escalation_reason": "",
+        "fix_round": 0,
+        "fix_patch": "",
+        "fix_files": [],
+        "fix_tree_hash": "",
+        "fix_pushed": False,
+        "fix_remote_sha": "",
+        "fix_history": [],
+        "merge_decision": None,
+        "outcome": None,
+        "merge_commit_sha": "",
+        "requires_human": False,
+        "human_decision": None,
+        "human_approvals": [],
+        "finding_outcomes": {},
+        "task_results": {},
+        "task_events": [],
+        "tool_events": [],
+        "tool_calls": 0,
+        "events": [],
         "agent_issues": [],
         "open_issues": [],
-        "director_resolve_count": 0,
-        "director_resolution": None,
-        "plan": None,
-        "located_files": [],
-        "symbol_bible": {},
-        "patch_outline": None,
-        "patch_units": [],
-        "static_verdict": None,
-        "machine_revision_count": 0,
-        "human_decision": None,
-        "human_revision_count": 0,
-        "anchor_round": 0,
-        "anchor_decision": None,
-        "f2p_tests": [],
-        "p2p_tests": [],
-        "f2p_test_file": "",
-        "f2p_test_code": "",
-        "production_attempt_count": 0,
-        "sandbox_result": None,
-        "patch_path": None,
-        "coverage_report_path": None,
-        "production_log": [],
         "errors": [],
         "budget_events": [],
         "budget_exceeded": False,
-        "status": "parsing",
+        "status": "pending",
         "error": None,
-        "_revision_target": None,
+        "run_record": {},
+        "verify_round": 0,
+        "infra_retry": 0,
+        "llm_calls": 0,
     }
+    state.update(overrides)  # type: ignore[typeddict-item]
+    return state
+
+
+__all__ = [
+    "ReviewState", "CodeGuardState", "initial_state",
+    "append_bounded", "merge_findings", "merge_files",
+]

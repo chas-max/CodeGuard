@@ -27,10 +27,18 @@ def run_review_task(task: TaskSpec, *, provider, work_root: Path | str) -> tuple
         sandbox_backend="fake", reports_dir=work / "reports",
     )
     ctx = ReviewNodes(settings, llm_provider=provider, sandbox=FakeSandboxBackend())
-    diff = str((task.input or {}).get("diff") or "")
+    diff = str(task.input.diff or "")
+    title = str(task.input.title or "").strip()
+    statement = str(task.input.problem_statement or "").strip()
+    profile = str(task.input.profile or "change").strip() or "change"
+    claim = (
+        {"kind": profile, "title": title, "statement": statement}
+        if (title or statement)
+        else {}
+    )
     decision, costs, _ = review(
-        ctx, claim={}, hybrid_report={}, validation_report={"status": "passed"},
-        diff_text=diff, changed_paths=patch_paths(diff),
+        ctx, claim=claim, hybrid_report={}, validation_report={"status": "passed"},
+        diff_text=diff, changed_paths=patch_paths(diff), profile=profile,
     )
     findings = [
         {

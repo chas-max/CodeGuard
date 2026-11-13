@@ -16,8 +16,8 @@ from .workspace import apply_candidate_patch, prepare_workspace, workspace_tree_
 
 
 def snapshot_path(task: TaskSpec, snapshot_root: Path | str) -> Path | None:
-    repo = str(task.identity.get("repo") or "").strip()
-    commit = str(task.identity.get("base_commit") or "").strip()
+    repo = str(task.identity.repo or "").strip()
+    commit = str(task.identity.base_commit or "").strip()
     if not repo or not commit:
         return None
     return Path(snapshot_root) / f"{repo.replace('/', '__')}@{commit[:12]}"
@@ -114,7 +114,7 @@ def run_fix_task(
                 ),
             }
 
-        test_patch = str((task.input or {}).get("test_patch") or "")
+        test_patch = str(task.input.test_patch or "")
         if test_patch.strip():
             ok, output = apply_candidate_patch(workspace, test_patch)
             if not ok:
@@ -124,10 +124,8 @@ def run_fix_task(
                     "error": f"test_patch 应用失败: {output[:800]}",
                 }
 
-        image = str((task.env or {}).get("image") or "codeguard-sandbox-python:3.12")
-        prepare_commands = [
-            str(item) for item in ((task.env or {}).get("prepare_commands") or [])
-        ]
+        image = str(task.env.image or "codeguard-sandbox-python:3.12")
+        prepare_commands = [str(item) for item in (task.env.prepare_commands or ())]
         if prepare_commands:
             prepared = prepare_environment(
                 sandbox, workspace=workspace.root, image=image,
@@ -141,12 +139,12 @@ def run_fix_task(
                     "test_logs": prepared.logs,
                 }
 
-        fail_to_pass = [str(item) for item in (task.expected.get("fail_to_pass") or [])]
-        pass_to_pass = [str(item) for item in (task.expected.get("pass_to_pass") or [])]
+        fail_to_pass = [str(item) for item in (task.expected.fail_to_pass or ())]
+        pass_to_pass = [str(item) for item in (task.expected.pass_to_pass or ())]
         run = run_tests(
             sandbox, workspace=workspace.root, image=image,
             nodes=fail_to_pass + pass_to_pass,
-            test_command=str((task.env or {}).get("test_command") or "python -m pytest -q"),
+            test_command=str(task.env.test_command or "python -m pytest -q"),
             job_id=task.task_id,
         )
         if run.infra_error:

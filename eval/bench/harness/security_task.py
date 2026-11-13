@@ -15,18 +15,20 @@ _SEVERITY_RANK = {
 
 
 def run_security_task(task: TaskSpec, *, work_root: Path | str) -> tuple[str, dict]:
-    payload = task.input or {}
-    instance = payload.get("instance") if isinstance(payload.get("instance"), dict) else {}
-    code = str(payload.get("code") or instance.get("code") or "")
+    code = str(task.input.code or "")
     if not code.strip():
         return "skipped", {"stage": "code", "error": "样本没有代码"}
 
     from codeguard.engine.static_scan import scan_tree
 
-    root = Path(work_root) / task.task_id.replace("/", "_")
-    root.mkdir(parents=True, exist_ok=True)
-    (root / "sample.py").write_text(code, encoding="utf-8")
-    report = scan_tree(root, ["sample.py"])
+    rel_path = str(task.input.path or "sample.py").strip().lstrip("/\\") or "sample.py"
+    root = (Path(work_root) / task.task_id.replace("/", "_")).resolve()
+    target = (root / rel_path).resolve()
+    if root != target and root not in target.parents:
+        return "error", {"stage": "path", "error": f"非法样本路径: {rel_path!r}"}
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(code, encoding="utf-8")
+    report = scan_tree(root, [target.relative_to(root).as_posix()])
     findings = [
         {
             "rule_id": str(item.rule_id),

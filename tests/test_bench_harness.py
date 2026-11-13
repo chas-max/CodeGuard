@@ -14,7 +14,7 @@ from eval.bench.harness.review_task import run_review_task
 from eval.bench.harness.security_task import run_security_task
 from eval.bench.harness.workspace import apply_candidate_patch, prepare_workspace
 from eval.bench.models import TaskSpec
-from tests.fakes import FakeProvider, FakeSandbox, init_git
+from tests.fakes import FakeLLM, FakeProvider, FakeSandbox, init_git
 
 BASE = "def add(a, b):\n    return a - b\n"
 PATCH = (
@@ -250,8 +250,9 @@ def test_run_fix_task_runs_prepare_commands(tmp_path: Path):
             ),
         )
 
-    task = replace(_fix_task(), env={
-        **_fix_task().env, "prepare_commands": ["printf 'v=1\\n' > prepared.txt"],
+    base_task = _fix_task()
+    task = replace(base_task, env={
+        **base_task.env.model_dump(), "prepare_commands": ["printf 'v=1\\n' > prepared.txt"],
     })
     status, payload = run_fix_task(
         task, snapshot_root=tmp_path / "snapshots",
@@ -377,3 +378,62 @@ def test_run_security_task_detects_dangerous_call(tmp_path: Path):
     assert status == "ok"
     assert payload["vulnerable"] is True
     assert payload["findings"]
+
+
+def test_run_review_task_forwards_claim_context(tmp_path: Path):
+    response = json.dumps({
+        "verdict": "approve", "confidence": 0.9, "summary": "looks good",
+        "findings": [], "fix_instructions": [], "residual_risks": [],
+    })
+    llm = FakeLLM([response])
+    task = TaskSpec(
+        task_id="reviewbench.rb-ctx", dataset="reviewbench",
+        capabilities=("F2", "F3"),
+        identity={"repo": "demo/repo", "base_commit": "b" * 40, "pr_or_issue": "pr:102"},
+        input={
+            "diff": "diff --git a/app.py b/app.py\n@@ -1 +1 @@\n-return 1\n+return 2\n",
+            "title": "Fix division guard",
+            "problem_statement": "Reject zero denominator before dividing",
+            "profile": "bugfix",
+        },
+        expected={"gold_findings": []}, env={},
+        license="MIT", quality_grade="B", source_layer="review",
+    )
+    status, _ = run_review_task(task, provider=lambda _role: llm, work_root=tmp_path / "review_ctx")
+    assert status == "ok"
+    prompt = llm.prompts[0]
+    assert "Fix division guard" in prompt
+    assert "Reject zero denominator before dividing" in prompt
+
+
+def test_resolve_patch_system_reads_problem_statement_without_instance():
+    fix_json = json.dumps({"patch": PATCH, "rationale": "add", "touched_files": ["calc.py"]})
+    llm = FakeLLM([fix_json])
+    task = TaskSpec(
+        task_id="swebench_verified.demo__repo-2", dataset="swebench_verified",
+        capabilities=("F4", "F5"),
+        identity={"repo": "demo/repo", "base_commit": "a" * 40, "instance_id": "demo__repo-2"},
+        input={"problem_statement": "Fix addition off-by-one bug"},
+        expected={"fail_to_pass": ["tests/test_calc.py::test_add"]},
+        env={}, license="MIT", quality_grade="A", source_layer="fix",
+    )
+    result = resolve_patch(task, source="system", provider=lambda _role: llm)
+    assert result.ok is True
+    assert "Fix addition off-by-one bug" in llm.prompts[0]
+
+
+def test_run_security_task_respects_custom_path(tmp_path: Path):
+    task = TaskSpec(
+        task_id="devign.sec-path", dataset="devign", capabilities=("F2",),
+        identity={"repo": "demo/repo", "base_commit": "c" * 40, "pr_or_issue": "x"},
+        input={
+            "code": "import os\n\ndef run(cmd):\n    return os.system(cmd)\n",
+            "path": "sub/mod.py",
+        },
+        expected={"vulnerable": True}, env={},
+        license="MIT", quality_grade="B", source_layer="security",
+    )
+    status, payload = run_security_task(task, work_root=tmp_path / "security_path")
+    assert status == "ok"
+    assert payload["vulnerable"] is True
+    assert (tmp_path / "security_path" / "devign.sec-path" / "sub" / "mod.py").is_file()

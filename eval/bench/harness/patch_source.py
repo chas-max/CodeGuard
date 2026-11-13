@@ -15,15 +15,8 @@ class PatchResult:
     costs: list[dict] = field(default_factory=list)
 
 
-def _instance(task: TaskSpec) -> dict:
-    payload = task.input or {}
-    instance = payload.get("instance")
-    return instance if isinstance(instance, dict) else {}
-
-
 def gold_patch(task: TaskSpec) -> PatchResult:
-    payload = task.input or {}
-    patch = str(payload.get("patch") or _instance(task).get("patch") or "")
+    patch = str(getattr(task.input, "patch", "") or "")
     if not patch.strip():
         return PatchResult(False, source="gold", error="gold patch 为空")
     return PatchResult(True, patch=patch, source="gold")
@@ -34,8 +27,7 @@ def system_patch(task: TaskSpec, provider) -> PatchResult:
         return PatchResult(False, source="system", error="system 补丁来源需要 LLM provider")
     from codeguard.agents.fixer import propose_fix
 
-    instance = _instance(task)
-    problem = str(instance.get("problem_statement") or "")
+    problem = str(getattr(task.input, "problem_statement", "") or "")
     findings = [{
         "id": "eval-issue-1",
         "category": "correctness",

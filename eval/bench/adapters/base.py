@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from ..metrics import ratio, wilson
-from ..models import Observation, ScoreRecord, TaskSpec
+from ..models import CAPABILITIES, DatasetEntry, Observation, ScoreRecord, TaskSpec
 
 
 def load_jsonl(path: Path | str) -> list[dict]:
@@ -59,6 +59,24 @@ def first_present(raw: dict, *keys: str, default: Any = "") -> Any:
     return default
 
 
+def entry_capabilities(
+    entry: DatasetEntry,
+    fallback: tuple[str, ...],
+    *,
+    supported: tuple[str, ...] | None = None,
+) -> tuple[str, ...]:
+    """能力由 registry 声明与适配器支持能力共同决定；未声明时退回 fallback。"""
+    declared = tuple(
+        cap for cap in CAPABILITIES if float(entry.capabilities.get(cap, 0.0) or 0.0) > 0
+    )
+    if not declared:
+        return fallback
+    if supported is None:
+        return declared
+    matched = tuple(cap for cap in declared if cap in supported)
+    return matched or fallback
+
+
 def task_capabilities(task: TaskSpec | None, observation: Observation) -> tuple[str, ...]:
     if task is not None and task.capabilities:
         return tuple(task.capabilities)
@@ -90,6 +108,7 @@ def metric_record(
 
 
 __all__ = [
-    "load_jsonl", "load_json", "as_list", "first_present", "task_capabilities",
+    "load_jsonl", "load_json", "as_list", "first_present",
+    "entry_capabilities", "task_capabilities",
     "rate_record", "metric_record",
 ]

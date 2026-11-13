@@ -8,17 +8,18 @@ from __future__ import annotations
 from pathlib import Path
 
 from ..metrics import ratio
-from ..models import CAPABILITIES, DatasetEntry, Observation, ScoreRecord, TaskSpec
+from ..models import (
+    DatasetEntry,
+    FixExpected,
+    FixInput,
+    Observation,
+    ScoreRecord,
+    TaskEnv,
+    TaskIdentity,
+    TaskSpec,
+)
 from ..paths import BENCH_ROOT
-from .base import as_list, first_present, load_jsonl, rate_record
-
-
-def entry_capabilities(entry: DatasetEntry, fallback: tuple[str, ...]) -> tuple[str, ...]:
-    """能力由 registry 声明决定；未声明时退回适配器默认值。"""
-    declared = tuple(
-        cap for cap in CAPABILITIES if float(entry.capabilities.get(cap, 0.0) or 0.0) > 0
-    )
-    return declared or fallback
+from .base import as_list, entry_capabilities, first_present, load_jsonl, rate_record
 
 
 class SwebenchAdapter:
@@ -39,6 +40,7 @@ class SwebenchAdapter:
             "problem_statement": str(
                 first_present(raw, "problem_statement", "problem", "title", default="")
             )[:4000],
+            "title": str(first_present(raw, "title", default="")),
             "fail_to_pass": [str(item) for item in as_list(
                 first_present(raw, "FAIL_TO_PASS", "fail_to_pass", default=[])
             )],
@@ -46,6 +48,8 @@ class SwebenchAdapter:
                 first_present(raw, "PASS_TO_PASS", "pass_to_pass", default=[])
             )],
             "version": str(first_present(raw, "version", default="")),
+            "python_version": str(first_present(raw, "python_version", default="")).strip(),
+            "language": str(first_present(raw, "language", "lang", default="")).strip().lower(),
             "environment_setup_commit": str(
                 first_present(raw, "environment_setup_commit", default="")
             ),
@@ -92,35 +96,43 @@ class SwebenchAdapter:
             instance_id = str(raw.get("instance_id") or "")
             if not instance_id:
                 continue
+            language = str(raw.get("language") or "") or (
+                "" if entry.name == "multi_swe_bench" else "python"
+            )
             tasks.append(TaskSpec(
                 task_id=f"{entry.name}.{instance_id}",
                 dataset=entry.name,
                 capabilities=capabilities,
-                identity={
-                    "repo": str(raw.get("repo") or ""),
-                    "base_commit": str(raw.get("base_commit") or ""),
-                    "pr_or_issue": f"instance:{instance_id}",
-                    "instance_id": instance_id,
-                },
-                input={
-                    "instance": raw,
-                    "patch": str(raw.get("patch") or ""),
-                    "test_patch": str(raw.get("test_patch") or ""),
-                },
-                expected={
-                    "fail_to_pass": list(raw.get("fail_to_pass") or []),
-                    "pass_to_pass": list(raw.get("pass_to_pass") or []),
-                },
-                env={
-                    "image": (
+                identity=TaskIdentity(
+                    repo=str(raw.get("repo") or ""),
+                    base_commit=str(raw.get("base_commit") or ""),
+                    pr_or_issue=f"instance:{instance_id}",
+                    instance_id=instance_id,
+                ),
+                input=FixInput(
+                    problem_statement=str(raw.get("problem_statement") or ""),
+                    patch=str(raw.get("patch") or ""),
+                    test_patch=str(raw.get("test_patch") or ""),
+                    title=str(raw.get("title") or ""),
+                    profile="bugfix",
+                ),
+                expected=FixExpected(
+                    fail_to_pass=tuple(str(item) for item in (raw.get("fail_to_pass") or [])),
+                    pass_to_pass=tuple(str(item) for item in (raw.get("pass_to_pass") or [])),
+                ),
+                env=TaskEnv(
+                    image=(
                         str(raw.get("image") or "")
                         or entry.image
                         or "codeguard-sandbox-python:3.12"
                     ),
-                    "test_command": str(raw.get("test_command") or entry.test_command),
-                    "snapshot_root": entry.snapshot_root,
-                    "prepare_commands": list(raw.get("prepare_commands") or []),
-                },
+                    language=language,
+                    version=str(raw.get("version") or ""),
+                    python_version=str(raw.get("python_version") or ""),
+                    environment_setup_commit=str(raw.get("environment_setup_commit") or ""),
+                    prepare_commands=tuple(str(item) for item in (raw.get("prepare_commands") or [])),
+                    test_command=str(raw.get("test_command") or entry.test_command),
+                ),
                 license=entry.license,
                 quality_grade=entry.quality_grade,
                 source_layer="fix",

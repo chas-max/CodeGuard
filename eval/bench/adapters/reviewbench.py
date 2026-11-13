@@ -10,8 +10,18 @@ registry 改成 `approved`，评分链路不变。
 from __future__ import annotations
 
 from ..metrics import macro_f1, match_findings, normalize_severity, prf, ratio, wilson
-from ..models import DatasetEntry, Observation, ScoreRecord, TaskSpec
-from .base import as_list, first_present, metric_record
+from ..models import (
+    DatasetEntry,
+    GoldFinding,
+    Observation,
+    ReviewExpected,
+    ReviewInput,
+    ScoreRecord,
+    TaskEnv,
+    TaskIdentity,
+    TaskSpec,
+)
+from .base import as_list, entry_capabilities, first_present, metric_record
 
 _GOLD_KEYS = (
     "gold_findings", "findings", "expected_findings",
@@ -109,28 +119,34 @@ class ReviewBenchAdapter:
 
     def to_tasks(self, entry: DatasetEntry, instances: list[dict]) -> list[TaskSpec]:
         tasks: list[TaskSpec] = []
+        capabilities = entry_capabilities(entry, ("F2", "F3"), supported=("F2", "F3"))
         for raw in instances:
             instance_id = str(raw.get("instance_id") or "")
             if not instance_id:
                 continue
             pr_number = raw.get("pr_number") or 0
+            gold_findings = tuple(
+                GoldFinding.model_validate(item) for item in (raw.get("gold_findings") or [])
+            )
             tasks.append(TaskSpec(
                 task_id=f"{entry.name}.{instance_id}",
                 dataset=entry.name,
-                capabilities=("F2", "F3"),
-                identity={
-                    "repo": str(raw.get("repo") or ""),
-                    "base_commit": str(raw.get("base_commit") or ""),
-                    "pr_or_issue": f"pr:{pr_number}" if pr_number else f"instance:{instance_id}",
-                    "instance_id": instance_id,
-                },
-                input={
-                    "instance": raw,
-                    "diff": str(raw.get("diff") or ""),
-                    "title": str(raw.get("title") or ""),
-                },
-                expected={"gold_findings": list(raw.get("gold_findings") or [])},
-                env={"window": 3},
+                capabilities=capabilities,
+                identity=TaskIdentity(
+                    repo=str(raw.get("repo") or ""),
+                    base_commit=str(raw.get("base_commit") or ""),
+                    head_commit=str(raw.get("head_commit") or ""),
+                    pr_or_issue=f"pr:{pr_number}" if pr_number else f"instance:{instance_id}",
+                    instance_id=instance_id,
+                ),
+                input=ReviewInput(
+                    diff=str(raw.get("diff") or ""),
+                    title=str(raw.get("title") or ""),
+                    problem_statement=str(raw.get("problem_statement") or ""),
+                    profile="change",
+                ),
+                expected=ReviewExpected(gold_findings=gold_findings),
+                env=TaskEnv(),
                 license=entry.license,
                 quality_grade=entry.quality_grade,
                 source_layer="review",
@@ -153,7 +169,10 @@ class ReviewBenchAdapter:
         tp = fp = fn = matched_gold = gold_total = 0
         severity_pairs: list[tuple[str, str]] = []
         for obs in live:
-            gold = list(by_id[obs.task_id].expected.get("gold_findings") or [])
+            gold = [
+                item.model_dump() if hasattr(item, "model_dump") else dict(item)
+                for item in (by_id[obs.task_id].expected.gold_findings or ())
+            ]
             predicted = list(obs.payload.get("findings") or [])
             result = match_findings(predicted, gold, window=3)
             tp += result.tp

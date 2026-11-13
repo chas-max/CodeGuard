@@ -16,11 +16,20 @@ FIXTURES = ROOT / "eval" / "datasets" / "bench" / "fixtures"
 
 def _task(task_id: str, caps: tuple[str, ...], *, dataset: str = "demo",
           layer: str = "", expected: dict | None = None) -> TaskSpec:
+    resolved = layer or "det"
+    inputs = {
+        "probe": {"probe": "diff_paths", "diff": ""},
+        "reviewer": {"case_name": task_id, "response": {}},
+        "review": {"diff": ""},
+        "security": {"code": ""},
+        "fix": {},
+    }
+    payload = inputs.get(resolved, {"case": {"id": task_id}})
     return TaskSpec(
         task_id=task_id, dataset=dataset, capabilities=caps,
         identity={"repo": "demo/repo", "base_commit": "a" * 40, "pr_or_issue": task_id},
-        input={}, expected=expected or {}, env={},
-        license="MIT", quality_grade="A", source_layer=layer,
+        input=payload, expected=expected or {}, env={},
+        license="MIT", quality_grade="A", source_layer=resolved,
     )
 
 
@@ -106,9 +115,9 @@ def test_swebench_adapter_resolve_and_p2p():
     tasks = adapter.to_tasks(entry, normalized)
     assert len(tasks) == 3
     assert all({"F4", "F5"} <= set(task.capabilities) for task in tasks)
-    assert tasks[0].identity["base_commit"] == "a" * 40
-    assert tasks[0].env["image"] == "codeguard-sandbox-pytest8:3.12"
-    assert tasks[1].env["image"] == entry.image
+    assert tasks[0].identity.base_commit == "a" * 40
+    assert tasks[0].env.image == "codeguard-sandbox-pytest8:3.12"
+    assert tasks[1].env.image == entry.image
 
     observations = [
         _obs(tasks[0], {"resolved": True, "applied": True,
@@ -162,7 +171,7 @@ def test_security_adapter_precision_recall():
     entry = load_registry().get("devign")
     adapter = get_adapter("security")
     tasks = [
-        _task(f"sec.{index}", ("F2",), dataset="devign",
+        _task(f"sec.{index}", ("F2",), dataset="devign", layer="security",
               expected={"vulnerable": vulnerable})
         for index, vulnerable in enumerate([True, False, True])
     ]
@@ -180,7 +189,7 @@ def test_adapter_without_gold_is_not_scored():
     entry = load_registry().get("reviewbench")
     adapter = get_adapter("reviewbench")
     task = _task("review.empty", ("F2", "F3"), dataset="reviewbench",
-                 expected={"gold_findings": []})
+                 layer="review", expected={"gold_findings": []})
     records = adapter.aggregate(entry, [task], [_obs(task, {"findings": []})])
     assert all(record.denominator == 0 for record in records)
     assert all(record.value == 0.0 for record in records)
@@ -289,3 +298,124 @@ def _swebench_rows() -> list[dict]:
         (FIXTURES / "swebench_sample.jsonl").read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
+
+
+def test_swebench_and_multi_swebench_fields_and_no_instance_dump():
+    adapter = get_adapter("swebench")
+    reg = load_registry()
+    swe = reg.get("swebench_verified")
+    mswe = reg.get("multi_swe_bench")
+    inst = adapter.normalize_instance({
+        "instance_id": "repo-1",
+        "repo": "org/repo",
+        "base_commit": "a" * 40,
+        "patch": "diff --git a/a.py b/a.py\n+x = 1\n",
+        "test_patch": "tpatch",
+        "problem_statement": "Crash on empty input",
+        "title": "Fix empty",
+        "version": "2.1",
+        "environment_setup_commit": "b" * 40,
+        "language": "go",
+        "python_version": "3.11",
+    })
+    tasks_swe = adapter.to_tasks(swe, [inst])
+    t = tasks_swe[0]
+    assert "instance" not in t.to_dict()["input"]
+    assert "snapshot_root" not in t.to_dict()["env"]
+    assert t.env.version == "2.1"
+    assert t.env.environment_setup_commit == "b" * 40
+    assert t.env.python_version == "3.11"
+    assert t.input.problem_statement == "Crash on empty input"
+    assert t.input.title == "Fix empty"
+    assert t.input.profile == "bugfix"
+
+    inst_no_lang = adapter.normalize_instance({
+        "instance_id": "go-1", "repo": "org/go", "base_commit": "a" * 40, "patch": "p",
+    })
+    assert adapter.to_tasks(swe, [inst_no_lang])[0].env.language == "python"
+    assert adapter.to_tasks(mswe, [inst_no_lang])[0].env.language == ""
+    assert adapter.to_tasks(mswe, [inst])[0].env.language == "go"
+
+
+def test_bugsinpy_preserves_python_version_and_language():
+    adapter = get_adapter("bugsinpy")
+    entry = load_registry().get("bugsinpy")
+    inst = adapter.normalize_instance({
+        "project": "tqdm", "bug_id": 1, "buggy_commit": "c" * 40,
+        "python_version": "3.8.5", "patch": "diff --git a/a.py b/a.py\n+pass\n",
+        "tests": ["tests/test_a.py::test_1"],
+    })
+    tasks = adapter.to_tasks(entry, [inst])
+    assert tasks[0].env.python_version == "3.8.5"
+    assert tasks[0].env.language == "python"
+
+
+def test_reviewbench_head_commit_no_window_and_supported_capabilities():
+    from eval.bench.models import DatasetEntry
+
+    adapter = get_adapter("reviewbench")
+    entry = DatasetEntry(
+        name="custom_rb", kind="external", adapter="reviewbench",
+        role="supplementary", capabilities={"F1": 0.5, "F2": 1.0},
+        license="MIT", quality_grade="B", status="approved",
+    )
+    inst = adapter.normalize_instance({
+        "repo": "org/r", "pr_number": 12, "base_commit": "a" * 40,
+        "head_commit": "d" * 40, "diff": "diff --git a/a.py b/a.py\n+x = 1\n",
+        "title": "PR title", "problem_statement": "PR description",
+        "gold_findings": [{"path": "a.py", "line": 1, "severity": "major"}],
+    })
+    tasks = adapter.to_tasks(entry, [inst])
+    t = tasks[0]
+    assert t.capabilities == ("F2",)
+    assert t.identity.head_commit == "d" * 40
+    assert t.input.problem_statement == "PR description"
+    assert t.input.profile == "change"
+    assert "window" not in t.to_dict()["env"]
+
+
+def test_security_generates_synthetic_diff_and_uses_supported_caps():
+    from eval.bench.models import DatasetEntry
+
+    adapter = get_adapter("security")
+    entry = DatasetEntry(
+        name="sec_sub", kind="external", adapter="security",
+        role="supplementary", capabilities={"F2": 1.0},
+        license="MIT", quality_grade="B", status="approved",
+    )
+    inst = adapter.normalize_instance({
+        "id": "s1", "repo": "org/sec", "commit": "e" * 40,
+        "code": "def f(x):\n    return os.system(x)\n",
+        "fixed_code": "def f(x):\n    return safe_run(x)\n",
+        "vulnerable": True, "severity": "critical", "cwe": "CWE-78",
+    })
+    tasks = adapter.to_tasks(entry, [inst])
+    t = tasks[0]
+    assert t.capabilities == ("F2",)
+    assert t.source_layer == "security"
+    assert "-    return os.system(x)" in t.input.diff
+    assert "+    return safe_run(x)" in t.input.diff
+
+
+def test_core_adapter_disambiguates_core_security_and_preserves_expected_flags():
+    from eval.bench.models import DatasetEntry
+
+    adapter = get_adapter("core")
+    entry = DatasetEntry(
+        name="core", kind="core", adapter="core",
+        role="primary", capabilities={"F2": 1.0, "F6": 1.0},
+        license="internal", quality_grade="A", status="approved",
+    )
+    t_sec = adapter._to_task(entry, {
+        "id": "security.no_new_priv", "layer": "security",
+        "expect": {"block": True, "rules": [], "tier": ""},
+    })
+    t_gate = adapter._to_task(entry, {
+        "id": "gate.approvals", "layer": "gate",
+        "expect": {"block": False, "approvals": 2, "semantic": True},
+    })
+    assert t_sec is not None and t_sec.source_layer == "core_security"
+    assert t_sec.input.case["layer"] == "security"
+    assert t_gate is not None
+    assert t_gate.expected.approvals == 2
+    assert t_gate.expected.semantic is True

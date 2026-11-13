@@ -5,9 +5,32 @@
 """
 from __future__ import annotations
 
+import difflib
+
 from ..metrics import macro_f1, normalize_severity, prf, wilson
-from ..models import DatasetEntry, Observation, ScoreRecord, TaskSpec
-from .base import first_present, metric_record, load_jsonl
+from ..models import (
+    DatasetEntry,
+    Observation,
+    ScoreRecord,
+    SecurityExpected,
+    SecurityInput,
+    TaskEnv,
+    TaskIdentity,
+    TaskSpec,
+)
+from .base import entry_capabilities, first_present, load_jsonl, metric_record
+
+
+def _synthetic_diff(code: str, fixed_code: str, path: str = "sample.py") -> str:
+    """当漏洞代码与修复代码同时存在时生成标准 unified diff 供去重与对照复用。"""
+    if not code.strip() or not fixed_code.strip():
+        return ""
+    return "".join(difflib.unified_diff(
+        code.splitlines(keepends=True),
+        fixed_code.splitlines(keepends=True),
+        fromfile=f"a/{path}",
+        tofile=f"b/{path}",
+    ))
 
 
 class SecurityAdapter:
@@ -44,27 +67,36 @@ class SecurityAdapter:
 
     def to_tasks(self, entry: DatasetEntry, instances: list[dict]) -> list[TaskSpec]:
         tasks: list[TaskSpec] = []
+        capabilities = entry_capabilities(entry, ("F2", "F3"), supported=("F2", "F3"))
         for raw in instances:
             instance_id = str(raw.get("instance_id") or "")
             if not instance_id:
                 continue
+            code = str(raw.get("code") or "")
+            fixed_code = str(raw.get("fixed_code") or "")
             tasks.append(TaskSpec(
                 task_id=f"{entry.name}.{instance_id}",
                 dataset=entry.name,
-                capabilities=("F2", "F3"),
-                identity={
-                    "repo": str(raw.get("repo") or ""),
-                    "base_commit": str(raw.get("commit") or ""),
-                    "pr_or_issue": f"instance:{instance_id}",
-                    "instance_id": instance_id,
-                },
-                input={"instance": raw, "code": raw.get("code", "")},
-                expected={
-                    "vulnerable": bool(raw.get("vulnerable")),
-                    "severity": str(raw.get("severity") or "high"),
-                    "cwe": str(raw.get("cwe") or ""),
-                },
-                env={},
+                capabilities=capabilities,
+                identity=TaskIdentity(
+                    repo=str(raw.get("repo") or ""),
+                    base_commit=str(raw.get("commit") or ""),
+                    pr_or_issue=f"instance:{instance_id}",
+                    instance_id=instance_id,
+                ),
+                input=SecurityInput(
+                    code=code,
+                    fixed_code=fixed_code,
+                    diff=_synthetic_diff(code, fixed_code),
+                    path="sample.py",
+                    language="python",
+                ),
+                expected=SecurityExpected(
+                    vulnerable=bool(raw.get("vulnerable")),
+                    severity=normalize_severity(str(raw.get("severity") or "high")),  # type: ignore[arg-type]
+                    cwe=str(raw.get("cwe") or ""),
+                ),
+                env=TaskEnv(),
                 license=entry.license,
                 quality_grade=entry.quality_grade,
                 source_layer="security",
@@ -86,7 +118,8 @@ class SecurityAdapter:
         tp = fp = fn = 0
         severity_pairs: list[tuple[str, str]] = []
         for obs in live:
-            expected = bool(by_id[obs.task_id].expected.get("vulnerable"))
+            task_exp = by_id[obs.task_id].expected
+            expected = bool(task_exp.vulnerable)
             predicted = obs.payload.get("vulnerable")
             if predicted is None:
                 predicted = bool(obs.payload.get("findings"))
@@ -99,7 +132,7 @@ class SecurityAdapter:
                 fp += 1
             if expected and predicted:
                 severity_pairs.append((
-                    normalize_severity(str(by_id[obs.task_id].expected.get("severity", ""))),
+                    normalize_severity(str(task_exp.severity)),
                     normalize_severity(str(obs.payload.get("severity", ""))),
                 ))
 

@@ -9,7 +9,20 @@ import json
 from pathlib import Path
 
 from ..metrics import prf, wilson
-from ..models import DatasetEntry, Observation, ScoreRecord, TaskSpec
+from ..models import (
+    CoreCaseExpected,
+    CoreCaseInput,
+    DatasetEntry,
+    Observation,
+    ProbeExpected,
+    ProbeInput,
+    ReviewerReplayExpected,
+    ReviewerReplayInput,
+    ScoreRecord,
+    TaskEnv,
+    TaskIdentity,
+    TaskSpec,
+)
 from ..paths import CORE_SUITE, REVIEWER_CASSETTE
 from ..probes import probe_instances
 from .base import load_jsonl, metric_record, rate_record
@@ -80,21 +93,26 @@ class CoreAdapter:
 
     def _to_task(self, entry: DatasetEntry, raw: dict) -> TaskSpec | None:
         if raw.get("layer") == "probe":
+            probe_id = str(raw["id"])
             return TaskSpec(
-                task_id=str(raw["id"]), dataset=entry.name, capabilities=("F1",),
-                identity={"repo": "core", "base_commit": "", "pr_or_issue": str(raw["id"])},
-                input={"probe": raw["probe"], "diff": raw.get("diff", "")},
-                expected={"paths": list(raw.get("expected_paths") or [])},
-                env={}, license=entry.license, quality_grade=entry.quality_grade,
+                task_id=probe_id, dataset=entry.name, capabilities=("F1",),
+                identity=TaskIdentity(repo="core", base_commit="", pr_or_issue=probe_id),
+                input=ProbeInput(probe=raw["probe"], diff=raw.get("diff", "")),
+                expected=ProbeExpected(paths=tuple(str(x) for x in (raw.get("expected_paths") or []))),
+                env=TaskEnv(), license=entry.license, quality_grade=entry.quality_grade,
                 source_layer="probe", role=entry.role,
             )
         if raw.get("mode") == "reviewer":
+            rev_id = str(raw["id"])
+            case_name = str(raw.get("case_name") or rev_id.rsplit(".", 1)[-1])
             return TaskSpec(
-                task_id=str(raw["id"]), dataset=entry.name, capabilities=("F3",),
-                identity={"repo": "core", "base_commit": "", "pr_or_issue": str(raw["id"])},
-                input={"reviewer": raw},
-                expected={"blocking": list(raw.get("expected_blocking") or [])},
-                env={}, license=entry.license, quality_grade=entry.quality_grade,
+                task_id=rev_id, dataset=entry.name, capabilities=("F3",),
+                identity=TaskIdentity(repo="core", base_commit="", pr_or_issue=rev_id),
+                input=ReviewerReplayInput(case_name=case_name, response=dict(raw.get("response") or {})),
+                expected=ReviewerReplayExpected(
+                    blocking=tuple(str(x) for x in (raw.get("expected_blocking") or []))
+                ),
+                env=TaskEnv(), license=entry.license, quality_grade=entry.quality_grade,
                 source_layer="reviewer", role=entry.role,
             )
         case_id = str(raw.get("id") or "")
@@ -105,18 +123,22 @@ class CoreAdapter:
         if not caps:
             return None
         expect = raw.get("expect") or {}
+        approvals = expect.get("approvals")
+        source_layer = "core_security" if layer == "security" else layer
         return TaskSpec(
             task_id=f"core.{case_id}" if not case_id.startswith("core.") else case_id,
             dataset=entry.name, capabilities=caps,
-            identity={"repo": "core", "base_commit": "", "pr_or_issue": case_id},
-            input={"case": raw},
-            expected={
-                "block": bool(expect.get("block")),
-                "rules": list(expect.get("rules") or []),
-                "tier": str(expect.get("tier") or ""),
-            },
-            env={}, license=entry.license, quality_grade=entry.quality_grade,
-            source_layer=layer, role=entry.role,
+            identity=TaskIdentity(repo="core", base_commit="", pr_or_issue=case_id),
+            input=CoreCaseInput(case=dict(raw)),
+            expected=CoreCaseExpected(
+                block=bool(expect.get("block")),
+                rules=tuple(str(x) for x in (expect.get("rules") or [])),
+                tier=str(expect.get("tier") or ""),
+                approvals=int(approvals) if approvals is not None else None,
+                semantic=bool(expect.get("semantic")),
+            ),
+            env=TaskEnv(), license=entry.license, quality_grade=entry.quality_grade,
+            source_layer=source_layer, role=entry.role,
         )
 
     # ── 聚合 ──

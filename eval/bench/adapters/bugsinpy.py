@@ -50,6 +50,8 @@ class BugsInPyAdapter(SwebenchAdapter):
                 first_present(raw, "pass_to_pass", default=[])
             )],
             "version": str(first_present(raw, "version", "python_version", default="")),
+            "python_version": str(first_present(raw, "python_version", "version", default="")).strip(),
+            "language": "python",
             "environment_setup_commit": "",
             "test_command": str(first_present(
                 raw, "test_command", default="python -m pytest -q"
@@ -77,7 +79,7 @@ class BugsInPyAdapter(SwebenchAdapter):
         matched = total = 0
         for obs in live:
             task = by_id[obs.task_id]
-            gold = _patch_paths(str(task.input.get("patch") or ""))
+            gold = _patch_paths(str(task.input.patch or ""))
             if not gold:
                 continue
             probe = obs.payload.get("f1_probe")

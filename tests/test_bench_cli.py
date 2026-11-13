@@ -169,3 +169,122 @@ def test_cli_fetch_list_status_and_verify(tmp_path: Path, capsys):
         "fetch", "--verify", "--registry", str(REGISTRY), "--root", str(root),
     ]) == 0
     assert json.loads(capsys.readouterr().out)["ok"] is True
+
+
+def test_cli_score_migrates_legacy_v1_tasks_jsonl(tmp_path: Path):
+    run_dir = tmp_path / "legacy_run"
+    run_dir.mkdir()
+    v1_tasks = [
+        {
+            "task_id": "reviewbench.org__r#1",
+            "dataset": "reviewbench",
+            "capabilities": ["F2", "F3"],
+            "identity": {"repo": "org/r", "base_commit": "a" * 40, "pr_or_issue": "pr:1", "instance_id": "1"},
+            "input": {
+                "instance": {"head_commit": "b" * 40, "problem_statement": "desc"},
+                "diff": "diff --git a/x.py b/x.py\n+x = 1\n",
+                "title": "Fix",
+            },
+            "expected": {"gold_findings": [{"path": "x.py", "line": 1, "severity": "major", "category": "bug"}]},
+            "env": {"window": 3},
+            "license": "MIT",
+            "quality_grade": "B",
+            "source_layer": "review",
+            "sample_uid": "u1",
+            "role": "supplementary",
+        },
+        {
+            "task_id": "core.security.net",
+            "dataset": "core",
+            "capabilities": ["F6"],
+            "identity": {"repo": "core", "base_commit": "", "pr_or_issue": "security.net"},
+            "input": {"case": {"id": "security.net", "layer": "security"}},
+            "expected": {"block": True, "rules": [], "tier": ""},
+            "env": {},
+            "license": "internal",
+            "quality_grade": "A",
+            "source_layer": "security",
+            "sample_uid": "u2",
+            "role": "supplementary",
+        },
+    ]
+    observations = [
+        {
+            "task_id": "reviewbench.org__r#1",
+            "dataset": "reviewbench",
+            "status": "ok",
+            "payload": {"findings": [{"path": "x.py", "line": 1, "severity": "high"}]},
+            "capabilities": ["F2", "F3"],
+            "sample_uid": "u1",
+            "cost_cny": 0.0,
+            "wall_ms": 1.0,
+            "skip_reason": "",
+            "error": "",
+        },
+        {
+            "task_id": "core.security.net",
+            "dataset": "core",
+            "status": "ok",
+            "payload": {"layer": "security", "passed": True, "blocked": True},
+            "capabilities": ["F6"],
+            "sample_uid": "u2",
+            "cost_cny": 0.0,
+            "wall_ms": 1.0,
+            "skip_reason": "",
+            "error": "",
+        },
+    ]
+    (run_dir / "tasks.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in v1_tasks),
+        encoding="utf-8",
+    )
+    (run_dir / "observations.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in observations),
+        encoding="utf-8",
+    )
+    (run_dir / "run_meta.json").write_text(
+        json.dumps({"run_id": "r1", "started_at": "2026-11-13T00:00:00Z"}),
+        encoding="utf-8",
+    )
+    (run_dir / "dedup.json").write_text("{}", encoding="utf-8")
+
+    rc = main(["score", "--input", str(run_dir), "--registry", str(REGISTRY), "--quiet"])
+    assert rc == 0
+    scores_doc = json.loads((run_dir / "scores.json").read_text(encoding="utf-8"))
+    assert any(
+        row["dataset"] == "reviewbench" and row["capability"] == "F2" and row["value"] == 1.0
+        for row in scores_doc["records"]
+    )
+    assert any(
+        row["dataset"] == "core" and row["capability"] == "F6" and row["value"] == 1.0
+        for row in scores_doc["records"]
+    )
+
+
+def test_runner_routes_core_security_to_core_not_external(tmp_path: Path):
+    from eval.bench.models import Observation, TaskSpec
+
+    registry = load_registry(REGISTRY)
+    runner = BenchRunner(registry=registry, out_dir=tmp_path / "run", offline=True)
+    calls: list[str] = []
+
+    runner._run_core = lambda task, repeat_index: (  # type: ignore[method-assign]
+        calls.append(task.source_layer)
+        or Observation(task_id=task.task_id, dataset=task.dataset, status="ok", payload={"passed": True})
+    )
+    runner._run_external = lambda task: (  # type: ignore[method-assign]
+        calls.append("external")
+        or Observation(task_id=task.task_id, dataset=task.dataset, status="ok", payload={})
+    )
+
+    task = TaskSpec(
+        task_id="core.security.probe1", dataset="core", capabilities=("F6",),
+        identity={"repo": "core", "pr_or_issue": "security.probe1"},
+        input={"case": {"id": "security.probe1", "layer": "security"}},
+        expected={"block": True}, env={},
+        license="internal", quality_grade="A", source_layer="core_security",
+        role="supplementary",
+    )
+    obs = runner._run_task(task, 0)
+    assert obs.status == "ok"
+    assert calls == ["core_security"]

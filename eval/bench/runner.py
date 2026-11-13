@@ -18,7 +18,7 @@ from pathlib import Path
 from .adapters import get_adapter
 from .adapters.base import load_jsonl
 from .dedup import DedupResult, dedup_tasks
-from .models import Observation, RunMeta, ScoreRecord, TaskSpec
+from .models import EXTERNAL_LAYERS, Observation, RunMeta, ScoreRecord, TaskSpec
 from .paths import BENCH_ROOT, PROJECT_ROOT
 from .registry import Registry
 
@@ -241,7 +241,7 @@ class BenchRunner:
                 observation = self._run_probe(task)
             elif task.source_layer == "reviewer":
                 observation = self._run_reviewer(task)
-            elif self.registry.get(task.dataset).kind == "external":
+            elif task.source_layer in EXTERNAL_LAYERS:
                 observation = self._run_external(task)
             else:
                 observation = self._run_core(task, repeat_index)
@@ -264,7 +264,7 @@ class BenchRunner:
     def _run_core(self, task: TaskSpec, repeat_index: int) -> Observation:
         from eval.loader import validate_case
 
-        raw = task.input.get("case") or {}
+        raw = dict(task.input.case)
         case = validate_case(raw)
         result = self._matrix_runner().run_case(case, repeat_index)
         if result.skipped:
@@ -284,8 +284,8 @@ class BenchRunner:
     def _run_probe(self, task: TaskSpec) -> Observation:
         from codeguard.engine.diff import patch_paths
 
-        diff = str(task.input.get("diff") or "")
-        expected = [str(item) for item in (task.expected.get("paths") or [])]
+        diff = str(task.input.diff or "")
+        expected = [str(item) for item in (task.expected.paths or ())]
         try:
             actual = patch_paths(diff)
             error = ""
@@ -297,7 +297,7 @@ class BenchRunner:
             task_id=task.task_id, dataset=task.dataset,
             status="ok" if not error else "error",
             payload={
-                "probe": str(task.input.get("probe") or ""),
+                "probe": str(task.input.probe or ""),
                 "expected": expected, "actual": actual, "passed": passed,
             },
             capabilities=task.capabilities, sample_uid=task.sample_uid,
@@ -305,8 +305,7 @@ class BenchRunner:
         )
 
     def _run_reviewer(self, task: TaskSpec) -> Observation:
-        reviewer = task.input.get("reviewer") or {}
-        case_name = str(reviewer.get("case_name") or task.task_id.rsplit(".", 1)[-1])
+        case_name = str(task.input.case_name or task.task_id.rsplit(".", 1)[-1])
         rows = self._reviewer_rows()
         row = next((item for item in rows if str(item.get("case")) == case_name), None)
         if row is None:

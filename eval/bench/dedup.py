@@ -7,8 +7,9 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass, field, replace
+from typing import Any
 
-from .models import TaskSpec
+from .models import TaskIdentity, TaskSpec
 
 
 def _clean_path(path: str) -> str:
@@ -65,9 +66,15 @@ def _normalize_repo(repo: str) -> str:
     return text.strip("/")
 
 
-def _subject(identity: dict) -> str:
+def _id_get(identity: TaskIdentity | dict, key: str, default: Any = "") -> Any:
+    if isinstance(identity, dict):
+        return identity.get(key, default)
+    return getattr(identity, key, default)
+
+
+def _subject(identity: TaskIdentity | dict) -> str:
     for key in ("pr_or_issue", "instance_id", "pr", "issue"):
-        value = identity.get(key)
+        value = _id_get(identity, key)
         if value not in (None, ""):
             if key == "pr":
                 return f"pr:{value}"
@@ -77,10 +84,10 @@ def _subject(identity: dict) -> str:
     return ""
 
 
-def sample_uid(identity: dict, patch_text: str = "") -> str:
+def sample_uid(identity: TaskIdentity | dict, patch_text: str = "") -> str:
     material = "|".join((
-        _normalize_repo(str(identity.get("repo") or "")),
-        str(identity.get("base_commit") or identity.get("commit") or "").strip().lower(),
+        _normalize_repo(str(_id_get(identity, "repo") or "")),
+        str(_id_get(identity, "base_commit") or _id_get(identity, "commit") or "").strip().lower(),
         _subject(identity),
         diff_norm_hash(patch_text),
     ))
@@ -88,14 +95,10 @@ def sample_uid(identity: dict, patch_text: str = "") -> str:
 
 
 def task_patch(task: TaskSpec) -> str:
-    payload = task.input or {}
-    candidate = payload.get("patch") or payload.get("diff")
-    if candidate:
-        return str(candidate)
-    instance = payload.get("instance")
-    if isinstance(instance, dict):
-        return str(instance.get("patch") or instance.get("diff") or "")
-    return ""
+    payload = task.input
+    if isinstance(payload, dict):
+        return str(payload.get("patch") or payload.get("diff") or "")
+    return str(getattr(payload, "patch", "") or getattr(payload, "diff", "") or "")
 
 
 def attach_uids(tasks: list[TaskSpec]) -> list[TaskSpec]:

@@ -5,7 +5,7 @@
 """
 from __future__ import annotations
 
-from .models import TaskSpec
+from .models import ProbeExpected, ProbeInput, TaskEnv, TaskIdentity, TaskSpec
 
 PROBE_INSTANCES: tuple[dict, ...] = (
     {
@@ -92,10 +92,10 @@ def probe_tasks(dataset: str = "core") -> list[TaskSpec]:
     for item in PROBE_INSTANCES:
         tasks.append(TaskSpec(
             task_id=item["id"], dataset=dataset, capabilities=("F1",),
-            identity={"repo": "core", "base_commit": "", "pr_or_issue": item["id"]},
-            input={"probe": item["probe"], "diff": item["diff"]},
-            expected={"paths": list(item["expected_paths"])},
-            env={}, license="internal", quality_grade="A", source_layer="probe",
+            identity=TaskIdentity(repo="core", base_commit="", pr_or_issue=item["id"]),
+            input=ProbeInput(probe=item["probe"], diff=item["diff"]),
+            expected=ProbeExpected(paths=tuple(item["expected_paths"])),
+            env=TaskEnv(), license="internal", quality_grade="A", source_layer="probe",
         ))
     return tasks
 

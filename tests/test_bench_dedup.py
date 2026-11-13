@@ -7,17 +7,18 @@ from eval.bench.dedup import (
     diff_norm_hash,
     normalize_diff,
     sample_uid,
+    task_patch,
 )
-from eval.bench.models import TaskSpec
+from eval.bench.models import TaskIdentity, TaskSpec
 
 
 def _task(task_id: str, dataset: str, *, patch: str = "", commit: str = "a" * 40,
-          repo: str = "demo/repo") -> TaskSpec:
+          repo: str = "demo/repo", source_layer: str = "fix") -> TaskSpec:
     return TaskSpec(
         task_id=task_id, dataset=dataset, capabilities=("F2",),
         identity={"repo": repo, "base_commit": commit, "pr_or_issue": "pr:1"},
         input={"patch": patch}, expected={}, env={},
-        license="MIT", quality_grade="A",
+        license="MIT", quality_grade="A", source_layer=source_layer,
     )
 
 
@@ -121,3 +122,44 @@ def test_duplicate_count_can_be_restored_from_report():
     restored = DedupResult(kept=[], duplicate_count=2).to_dict()
     assert restored["duplicate_count"] == 2
     assert restored["duplicates"] == []
+
+
+def test_sample_uid_accepts_task_identity_and_dict():
+    uid_dict = sample_uid(
+        {"repo": "Org/Repo", "base_commit": "ABC", "pr_or_issue": "pr:1"},
+        "+x = 1\n",
+    )
+    uid_model = sample_uid(
+        TaskIdentity(repo="Org/Repo", base_commit="ABC", pr_or_issue="pr:1"),
+        "+x = 1\n",
+    )
+    assert uid_dict == uid_model
+
+
+def test_dedup_works_with_review_and_security_synthetic_diff():
+    s1 = TaskSpec(
+        task_id="sec.1", dataset="devign", capabilities=("F2",),
+        identity={"repo": "r", "base_commit": "a" * 40, "instance_id": "1"},
+        input={"code": "old()", "fixed_code": "new()", "diff": "-old()\n+new()\n"},
+        expected={"vulnerable": True}, env={}, license="MIT", quality_grade="B",
+        source_layer="security",
+    )
+    s2 = TaskSpec(
+        task_id="sec.2", dataset="primevul", capabilities=("F2",),
+        identity={"repo": "r", "base_commit": "a" * 40, "instance_id": "1"},
+        input={"code": "old()", "fixed_code": "new()", "diff": "-old()\n+new()\n"},
+        expected={"vulnerable": True}, env={}, license="MIT", quality_grade="B",
+        source_layer="security",
+    )
+    r1 = TaskSpec(
+        task_id="rev.1", dataset="reviewbench", capabilities=("F2", "F3"),
+        identity={"repo": "r", "base_commit": "b" * 40, "pr_or_issue": "pr:2"},
+        input={"diff": "--- a/x.py\n+++ b/x.py\n+y = 1\n"},
+        expected={"gold_findings": []}, env={}, license="MIT", quality_grade="B",
+        source_layer="review",
+    )
+    assert task_patch(s1) == "-old()\n+new()\n"
+    assert task_patch(r1).startswith("--- a/x.py")
+    result = dedup_tasks([s1, s2, r1])
+    assert len(result.kept) == 2
+    assert len(result.duplicates) == 1

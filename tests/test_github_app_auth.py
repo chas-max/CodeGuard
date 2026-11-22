@@ -216,3 +216,28 @@ def test_client_401_invalidates_and_retries_once():
     assert client.get_repo("acme/demo") == {"full_name": "acme/demo"}
     assert invalidated == ["acme/demo"]
     assert client._client.calls == 2
+
+
+def test_client_merge_retries_transient_405(monkeypatch):
+    class _MergeHTTP:
+        def __init__(self):
+            self.calls: list[tuple[str, str]] = []
+            self.merge_attempts = 0
+
+        def request(self, method, url, headers=None, **kwargs):
+            self.calls.append((method, url))
+            if url.endswith("/merge"):
+                self.merge_attempts += 1
+                if self.merge_attempts < 2:
+                    resp = _FlakyResponse(405)
+                    resp.text = '{"message":"Base branch was modified. Review and try the merge again."}'
+                    return resp
+                return _FlakyResponse(200, {"sha": "merged_sha_123"})
+            return _FlakyResponse(200, {"number": 10, "mergeable": True})
+
+    monkeypatch.setattr("codeguard.github.client.time.sleep", lambda *_: None)
+    client = GitHubClient("tok")
+    client._client = _MergeHTTP()
+    res = client.merge("acme/demo", 10, sha="a" * 40, method="squash", title="t", message="m")
+    assert res["sha"] == "merged_sha_123"
+    assert client._client.merge_attempts == 2

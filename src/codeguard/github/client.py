@@ -1,6 +1,7 @@
 """GitHub REST 客户端（httpx）。测试使用 FakeGitHubClient，不触网。"""
 from __future__ import annotations
 
+import time
 from typing import Any, Callable
 
 import httpx
@@ -213,15 +214,39 @@ class GitHubClient:
         )
 
     def merge(self, repo: str, number: int, *, sha: str, method: str, title: str, message: str) -> dict:
-        return self._request(
-            "PUT", f"/repos/{repo}/pulls/{number}/merge", repo=repo,
-            json={
-                "sha": sha,
-                "merge_method": method,
-                "commit_title": title[:250],
-                "commit_message": message[:1000],
-            },
-        )
+        payload = {
+            "sha": sha,
+            "merge_method": method,
+            "commit_title": title[:250],
+            "commit_message": message[:1000],
+        }
+        # push_fix 刚更新 PR head 后，GitHub 异步重算合并引用时可能短暂返回 405
+        for attempt in range(4):
+            try:
+                return self._request(
+                    "PUT",
+                    f"/repos/{repo}/pulls/{number}/merge",
+                    repo=repo,
+                    json=payload,
+                )
+            except GitHubError as exc:
+                msg = str(exc).lower()
+                transient_405 = (
+                    "github 405" in msg
+                    and (
+                        "base branch was modified" in msg
+                        or "not mergeable" in msg
+                        or "try the merge again" in msg
+                    )
+                )
+                if not transient_405 or attempt >= 3:
+                    raise
+                try:
+                    self.get_pr(repo, number)
+                except GitHubError:
+                    pass
+                time.sleep(1.5 * (attempt + 1))
+        raise GitHubError("merge 重试耗尽")
 
     def create_pull_request(
         self,

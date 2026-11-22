@@ -17,6 +17,7 @@ build/
 github-app.json
 .venv/
 venv/
+.worktrees/
 
 # 运行时产物
 checkpoints.db

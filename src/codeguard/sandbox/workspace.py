@@ -49,10 +49,12 @@ def clone_repo(repo_url: str, dest: Path, *, ref: str = "", token: str | None = 
         )
         if checkout.returncode != 0:
             raise RuntimeError(f"git fetch 失败: {redact_secrets((checkout.stderr or checkout.stdout)[:500])}")
-        subprocess.run(
-            ["git", "-C", str(dest), "-c", "core.hooksPath=", "checkout", "--detach", "FETCH_HEAD"],
-            capture_output=True, text=True, timeout=timeout_sec, check=True,
+        co = subprocess.run(
+            ["git", "-C", str(dest), "-c", "core.hooksPath=", "-c", "http.postBuffer=16777216", "checkout", "--detach", "FETCH_HEAD"],
+            capture_output=True, text=True, timeout=timeout_sec,
         )
+        if co.returncode != 0:
+            raise RuntimeError(f"git checkout 失败: {redact_secrets((co.stderr or co.stdout)[:500])}")
     return dest
 
 

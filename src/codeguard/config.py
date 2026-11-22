@@ -79,10 +79,20 @@ class Settings:
     max_pr_files: int = 50
     max_changed_lines: int = 3000
     max_diff_bytes: int = 2_000_000
-    max_fix_rounds: int = 2
-    max_review_rounds: int = 2
+    max_fix_rounds: int = 5
+    max_review_rounds: int = 5
+    recursion_limit: int = 150
     max_job_seconds: int = 1200
     reject_confidence: float = 0.85
+
+    # submission & procedural memory (RAG)
+    submit_mode: str = "push_commit"  # push_commit | new_pr
+    memory_db_path: Path = field(default_factory=lambda: Path("data/procedural_memory.db"))
+    embedding_provider: str = "auto"  # auto | openai | dashscope | local
+    embedding_model: str = "text-embedding-v3"
+    embedding_base_url: str = ""
+    embedding_api_key: str | None = None
+    embedding_dim: int = 256
 
     # coordinator
     coordinator_max_parallel: int = 6
@@ -145,9 +155,16 @@ class Settings:
         for name in (
             "max_pr_files", "max_changed_lines", "max_fix_rounds", "max_review_rounds",
             "coordinator_max_parallel", "llm_max_concurrency", "sandbox_max_concurrency",
+            "embedding_dim",
         ):
             if getattr(self, name) <= 0:
                 errors.append(f"{name} 必须为正整数")
+        if self.recursion_limit < 50:
+            errors.append("recursion_limit 必须 >= 50")
+        if self.submit_mode not in ("push_commit", "new_pr"):
+            errors.append("SUBMIT_MODE 只允许 push_commit/new_pr")
+        if self.embedding_provider not in ("auto", "openai", "dashscope", "local"):
+            errors.append("EMBEDDING_PROVIDER 只允许 auto/openai/dashscope/local")
         if self.sandbox_backend not in ("docker", "fake"):
             errors.append("SANDBOX_BACKEND 只允许 docker/fake")
         if self.agent_tools_max_capability not in ("", "none", "read", "exec", "write"):
@@ -212,10 +229,18 @@ def load_settings(
         max_pr_files=_env_int("MAX_PR_FILES", 50),
         max_changed_lines=_env_int("MAX_CHANGED_LINES", 3000),
         max_diff_bytes=_env_int("MAX_DIFF_BYTES", 2_000_000),
-        max_fix_rounds=_env_int("MAX_FIX_ROUNDS", 2),
-        max_review_rounds=_env_int("MAX_REVIEW_ROUNDS", 2),
+        max_fix_rounds=_env_int("MAX_FIX_ROUNDS", 5),
+        max_review_rounds=_env_int("MAX_REVIEW_ROUNDS", 5),
+        recursion_limit=_env_int("GRAPH_RECURSION_LIMIT", 150),
         max_job_seconds=_env_int("MAX_JOB_SECONDS", 1200),
         reject_confidence=_env_float("REJECT_CONFIDENCE", 0.85),
+        submit_mode=_env_str("SUBMIT_MODE", "push_commit").lower(),
+        memory_db_path=Path(_env_str("MEMORY_DB_PATH", "data/procedural_memory.db")),
+        embedding_provider=_env_str("EMBEDDING_PROVIDER", "auto").lower(),
+        embedding_model=_env_str("EMBEDDING_MODEL", "text-embedding-v3"),
+        embedding_base_url=_env_str("EMBEDDING_BASE_URL", ""),
+        embedding_api_key=_env_str("EMBEDDING_API_KEY") or None,
+        embedding_dim=_env_int("EMBEDDING_DIM", 256),
         coordinator_max_parallel=_env_int("COORDINATOR_MAX_PARALLEL", 6),
         llm_max_concurrency=_env_int("LLM_MAX_CONCURRENCY", 4),
         sandbox_max_concurrency=_env_int("SANDBOX_MAX_CONCURRENCY", 2),

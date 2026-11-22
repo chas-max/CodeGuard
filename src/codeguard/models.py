@@ -228,6 +228,8 @@ class Finding(BaseModel):
     introduced_by_pr: bool = False
     demoted_by: str = ""
     group: str = ""
+    confidence: float = Field(default=0.8, ge=0.0, le=1.0)
+    reported_by: list[str] = Field(default_factory=list)
 
     @field_validator("path")
     @classmethod
@@ -540,6 +542,30 @@ class MergeDecision(BaseModel):
         return self
 
 
+from .models_v2 import (
+    IMPORTANCE_APPROVALS,
+    IMPORTANCE_RANK,
+    IMPORTANCE_TO_TIER,
+    REVIEWER_LABELS,
+    REVIEWER_ROLES,
+    TIER_TO_IMPORTANCE,
+    CodePartition,
+    FixDirective,
+    FixExecutionResult,
+    ImportanceLevel,
+    PerspectiveReviewOutput,
+    PRBrief,
+    ProceduralMemoryRecord,
+    QACheckReport,
+    QAItemCheck,
+    ReviewerMemory,
+    ReviewerRole,
+    ReviewSummary,
+    max_importance,
+    normalize_importance,
+    stable_content_hash,
+)
+
 __all__ = [
     "Severity", "FindingSource", "FindingCategory", "IssueStatus", "ReviewVerdict",
     "Outcome", "SandboxStatus", "MergeMode", "FindingLifecycle", "ReviewProfile",
@@ -548,4 +574,10 @@ __all__ = [
     "HybridScanReport", "IssueClaim", "ReproEvidence", "IssueVerification",
     "ValidationReport", "ReviewDecision", "RiskTier", "Approval", "IntentVerification",
     "FixProposal", "MergeDecision", "validate_repo_path",
+    "ImportanceLevel", "ReviewerRole", "REVIEWER_ROLES", "REVIEWER_LABELS",
+    "IMPORTANCE_RANK", "IMPORTANCE_TO_TIER", "TIER_TO_IMPORTANCE", "IMPORTANCE_APPROVALS",
+    "normalize_importance", "max_importance", "stable_content_hash",
+    "CodePartition", "PRBrief", "ReviewerMemory", "PerspectiveReviewOutput",
+    "FixDirective", "FixExecutionResult", "QAItemCheck", "QACheckReport",
+    "ReviewSummary", "ProceduralMemoryRecord",
 ]

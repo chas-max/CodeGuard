@@ -9,13 +9,12 @@ from codeguard.nodes import ReviewNodes
 from codeguard.runtime import CodeGuardRuntime
 from codeguard.sandbox.models import SandboxResult
 from tests.fakes import (
-    CLAIM_JSON,
-    REVIEW_APPROVE,
-    SEMANTIC_EMPTY,
+    PR_BRIEF_CRITICAL_JSON,
     FakeGitHub,
     FakeProvider,
     FakeSandbox,
     make_fixture_repo,
+    v2_provider_map,
 )
 
 
@@ -23,11 +22,7 @@ def test_high_risk_requires_human_then_merges(tmp_path: Path):
     base, head = make_fixture_repo(tmp_path)
     cfg = load_settings(data_dir=tmp_path / "data", checkpoint_path=tmp_path / "ck.db",
                         sandbox_backend="fake", merge_mode="auto")
-    provider = FakeProvider({
-        "issue_verifier": [CLAIM_JSON],
-        "semantic_detector": [SEMANTIC_EMPTY],
-        "reviewer": [REVIEW_APPROVE],
-    })
+    provider = FakeProvider(v2_provider_map(pr_brief=PR_BRIEF_CRITICAL_JSON))
     github = FakeGitHub()
 
     def handler(spec):

@@ -9,13 +9,12 @@ from codeguard.models import FileChange, PullRequestContext
 from codeguard.nodes import ReviewNodes
 from codeguard.runtime import CodeGuardRuntime
 from tests.fakes import (
-    CLAIM_JSON,
-    REVIEW_APPROVE,
-    SEMANTIC_EMPTY,
+    PR_BRIEF_BUGFIX_JSON,
     FakeGitHub,
     FakeProvider,
     FakeSandbox,
     make_fixture_repo,
+    v2_provider_map,
 )
 
 
@@ -28,11 +27,7 @@ def test_external_mode_forces_bugfix_profile_and_reproduction(tmp_path: Path):
         data_dir=tmp_path / "data", checkpoint_path=tmp_path / "ck.db",
         sandbox_backend="fake", merge_mode="auto",
     )
-    provider = FakeProvider({
-        "issue_verifier": [CLAIM_JSON],
-        "semantic_detector": [SEMANTIC_EMPTY],
-        "reviewer": [REVIEW_APPROVE],
-    })
+    provider = FakeProvider(v2_provider_map(pr_brief=PR_BRIEF_BUGFIX_JSON))
     sandbox = FakeSandbox()
     github = FakeGitHub()
     nodes = ReviewNodes(cfg, llm_provider=provider, github=github, sandbox=sandbox)

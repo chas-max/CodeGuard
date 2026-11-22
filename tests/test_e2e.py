@@ -9,13 +9,12 @@ from codeguard.models import FileChange, PullRequestContext
 from codeguard.nodes import ReviewNodes
 from codeguard.runtime import CodeGuardRuntime
 from tests.fakes import (
-    CLAIM_JSON,
-    REVIEW_APPROVE,
-    SEMANTIC_EMPTY,
+    PR_BRIEF_BUGFIX_JSON,
     FakeGitHub,
     FakeProvider,
     FakeSandbox,
     make_fixture_repo,
+    v2_provider_map,
 )
 
 
@@ -43,11 +42,7 @@ def test_valid_fix_merges(tmp_path: Path):
         sandbox_backend="fake",
         merge_mode="auto",
     )
-    provider = FakeProvider({
-        "issue_verifier": [CLAIM_JSON],
-        "semantic_detector": [SEMANTIC_EMPTY],
-        "reviewer": [REVIEW_APPROVE],
-    })
+    provider = FakeProvider(v2_provider_map(pr_brief=PR_BRIEF_BUGFIX_JSON))
     github = FakeGitHub()
     nodes = ReviewNodes(cfg, llm_provider=provider, github=github, sandbox=FakeSandbox())
     runtime = CodeGuardRuntime(cfg, nodes=nodes, checkpointer=make_checkpointer(tmp_path / "ckpt.db"))

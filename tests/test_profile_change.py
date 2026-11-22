@@ -12,12 +12,13 @@ from codeguard.models import FileChange, PullRequestContext
 from codeguard.nodes import ReviewNodes
 from codeguard.runtime import CodeGuardRuntime
 from tests.fakes import (
-    REVIEW_APPROVE,
-    SEMANTIC_EMPTY,
+    PR_BRIEF_LOW_JSON,
+    PR_BRIEF_MEDIUM_JSON,
     FakeGitHub,
     FakeProvider,
     FakeSandbox,
     make_fixture_repo,
+    v2_provider_map,
 )
 
 FEATURE_CLAIM = json.dumps({
@@ -52,11 +53,7 @@ def test_resolve_profile_precedence():
 def test_feature_pr_skips_reproduction_and_merges(tmp_path: Path):
     base, head = make_fixture_repo(tmp_path)
     cfg = _cfg(tmp_path)
-    provider = FakeProvider({
-        "issue_verifier": [FEATURE_CLAIM],
-        "semantic_detector": [SEMANTIC_EMPTY],
-        "reviewer": [REVIEW_APPROVE],
-    })
+    provider = FakeProvider(v2_provider_map(pr_brief=PR_BRIEF_MEDIUM_JSON))
     sandbox = FakeSandbox()
     github = FakeGitHub()
     nodes = ReviewNodes(cfg, llm_provider=provider, github=github, sandbox=sandbox)
@@ -89,11 +86,7 @@ def test_change_profile_without_tests_is_not_blocked(tmp_path: Path):
     (base / ".codeguard").mkdir()
     (base / ".codeguard" / "policy.yml").write_text("trusted_authors: [dev]\n", encoding="utf-8")
     cfg = _cfg(tmp_path)
-    provider = FakeProvider({
-        "issue_verifier": [FEATURE_CLAIM],
-        "semantic_detector": [SEMANTIC_EMPTY],
-        "reviewer": [REVIEW_APPROVE],
-    })
+    provider = FakeProvider(v2_provider_map(pr_brief=PR_BRIEF_LOW_JSON))
     nodes = ReviewNodes(cfg, llm_provider=provider, github=FakeGitHub(), sandbox=FakeSandbox())
     runtime = CodeGuardRuntime(cfg, nodes=nodes, checkpointer=make_checkpointer(tmp_path / "ck.db"))
     pr = PullRequestContext(
@@ -126,11 +119,7 @@ def test_validation_uses_policy_commands(tmp_path: Path):
         encoding="utf-8",
     )
     cfg = _cfg(tmp_path)
-    provider = FakeProvider({
-        "issue_verifier": [FEATURE_CLAIM],
-        "semantic_detector": [SEMANTIC_EMPTY],
-        "reviewer": [REVIEW_APPROVE],
-    })
+    provider = FakeProvider(v2_provider_map(pr_brief=PR_BRIEF_MEDIUM_JSON))
     sandbox = FakeSandbox()
     nodes = ReviewNodes(cfg, llm_provider=provider, github=FakeGitHub(), sandbox=sandbox)
     runtime = CodeGuardRuntime(cfg, nodes=nodes, checkpointer=make_checkpointer(tmp_path / "ck.db"))

@@ -17,19 +17,13 @@ from codeguard.config import load_settings
 from eval.pseudo_pr import PseudoPR
 from eval.simulate_pr import matches, simulate
 from tests.fakes import (
-    CLAIM_JSON,
-    REVIEW_APPROVE,
-    SEMANTIC_EMPTY,
     FakeGitHub,
     FakeSandbox,
     RepeatingProvider,
+    v2_repeating_map,
 )
 
-PROVIDER = {
-    "issue_verifier": CLAIM_JSON,
-    "semantic_detector": SEMANTIC_EMPTY,
-    "reviewer": REVIEW_APPROVE,
-}
+PROVIDER = v2_repeating_map()
 
 CLEAN = PseudoPR(
     name="clean_helper",

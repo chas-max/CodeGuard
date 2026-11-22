@@ -297,3 +297,112 @@ REVIEW_APPROVE = json.dumps({
     "fix_instructions": [],
     "residual_risks": [],
 }, ensure_ascii=False)
+
+PR_BRIEF_LOW_JSON = json.dumps({
+    "problem_summary": "更新文档与非敏感注释说明",
+    "change_intent": "docs",
+    "before_behavior": "文档说明较旧",
+    "after_behavior": "文档与注释更清晰",
+    "background_context": "低风险文档调整",
+    "llm_suggested_level": "low",
+    "escalation_reasons": [],
+    "affected_modules": ["docs/guide.md"],
+    "risk_highlights": [],
+}, ensure_ascii=False)
+
+PR_BRIEF_MEDIUM_JSON = json.dumps({
+    "problem_summary": "调整常规业务逻辑并验证行为",
+    "change_intent": "change",
+    "before_behavior": "旧实现未处理边界",
+    "after_behavior": "已调整逻辑实现",
+    "background_context": "常规代码变更",
+    "llm_suggested_level": "medium",
+    "escalation_reasons": [],
+    "affected_modules": ["calc.py"],
+    "risk_highlights": [],
+}, ensure_ascii=False)
+
+PR_BRIEF_BUGFIX_JSON = json.dumps({
+    "problem_summary": "divide_safe(10, 0) 抛 ZeroDivisionError",
+    "change_intent": "bugfix",
+    "before_behavior": "divide_safe(10, 0) 抛出异常",
+    "after_behavior": "divide_safe(10, 0) 安全返回 0.0",
+    "background_context": "修复除零异常",
+    "llm_suggested_level": "medium",
+    "escalation_reasons": [],
+    "affected_modules": ["calc.py"],
+    "risk_highlights": [],
+}, ensure_ascii=False)
+
+PR_BRIEF_CRITICAL_JSON = json.dumps({
+    "problem_summary": "涉及鉴权、密钥或关键路径改动",
+    "change_intent": "change",
+    "before_behavior": "旧鉴权校验逻辑",
+    "after_behavior": "更新核心鉴权路径",
+    "background_context": "高危核心路径",
+    "llm_suggested_level": "critical",
+    "escalation_reasons": ["触及核心安全路径"],
+    "affected_modules": ["src/auth/login.py"],
+    "risk_highlights": ["需要严格安全复核"],
+}, ensure_ascii=False)
+
+REVIEW_PASS_JSON = json.dumps({
+    "needs_modification": False,
+    "summary": "审查通过，未发现需要修改的问题",
+    "findings": [],
+    "memory_notes": [],
+    "confidence": 0.92,
+}, ensure_ascii=False)
+
+QA_PASS_JSON = json.dumps({
+    "verdict": "pass",
+    "is_aligned": True,
+    "has_scope_drift": False,
+    "alignment_score": 1.0,
+    "item_checks": [],
+    "drift_details": [],
+    "redirect_instructions": [],
+    "summary": "Coder 补丁与 FixDirective 主题完全对齐",
+}, ensure_ascii=False)
+
+
+def v2_provider_map(
+    *,
+    pr_brief: str = PR_BRIEF_MEDIUM_JSON,
+    rounds: int = 1,
+    overrides: dict[str, list[str]] | None = None,
+) -> dict[str, list[str]]:
+    """构造 CodeGuard v2 全节点测试所需的角色响应映射。"""
+    base: dict[str, list[str]] = {
+        "pr_reader": [pr_brief],
+        "review_logic": [REVIEW_PASS_JSON] * rounds,
+        "review_security": [REVIEW_PASS_JSON] * rounds,
+        "review_architecture": [REVIEW_PASS_JSON] * rounds,
+        "review_tests": [REVIEW_PASS_JSON] * rounds,
+        "qa_checker": [QA_PASS_JSON] * rounds,
+    }
+    if overrides:
+        for key, value in overrides.items():
+            base[key] = list(value)
+    return base
+
+
+def v2_repeating_map(
+    *,
+    pr_brief: str = PR_BRIEF_MEDIUM_JSON,
+    overrides: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """构造 RepeatingProvider 使用的单例响应映射。"""
+    base: dict[str, str] = {
+        "pr_reader": pr_brief,
+        "review_logic": REVIEW_PASS_JSON,
+        "review_security": REVIEW_PASS_JSON,
+        "review_architecture": REVIEW_PASS_JSON,
+        "review_tests": REVIEW_PASS_JSON,
+        "qa_checker": QA_PASS_JSON,
+        "coder": json.dumps({"patch": "", "modified_files": [], "explanation": ""}),
+    }
+    if overrides:
+        base.update(overrides)
+    return base
+

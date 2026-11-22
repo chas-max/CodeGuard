@@ -12,12 +12,12 @@ from codeguard.models import FileChange, PullRequestContext
 from codeguard.nodes import ReviewNodes
 from codeguard.runtime import CodeGuardRuntime
 from tests.fakes import (
-    REVIEW_APPROVE,
-    SEMANTIC_EMPTY,
+    PR_BRIEF_MEDIUM_JSON,
     FakeGitHub,
     FakeProvider,
     FakeSandbox,
     make_fixture_repo,
+    v2_provider_map,
 )
 
 CLAIM = json.dumps({
@@ -92,11 +92,7 @@ def test_finalize_writes_job_record(tmp_path: Path):
         data_dir=tmp_path / "data", checkpoint_path=tmp_path / "ck.db",
         sandbox_backend="fake", merge_mode="auto", reports_dir=reports,
     )
-    provider = FakeProvider({
-        "issue_verifier": [CLAIM],
-        "semantic_detector": [SEMANTIC_EMPTY],
-        "reviewer": [REVIEW_APPROVE],
-    })
+    provider = FakeProvider(v2_provider_map(pr_brief=PR_BRIEF_MEDIUM_JSON))
     nodes = ReviewNodes(cfg, llm_provider=provider, github=FakeGitHub(), sandbox=FakeSandbox())
     runtime = CodeGuardRuntime(cfg, nodes=nodes, checkpointer=make_checkpointer(tmp_path / "ck.db"))
     pr = PullRequestContext(

@@ -11,14 +11,13 @@ from codeguard.nodes import ReviewNodes
 from codeguard.runtime import CodeGuardRuntime
 from codeguard.sandbox.models import SandboxResult
 from tests.fakes import (
-    CLAIM_JSON,
-    REVIEW_APPROVE,
-    SEMANTIC_EMPTY,
+    PR_BRIEF_BUGFIX_JSON,
     FakeGitHub,
     FakeProvider,
     FakeSandbox,
     init_git,
     make_fixture_repo,
+    v2_provider_map,
 )
 
 
@@ -33,21 +32,22 @@ def test_fixer_edits_in_sandbox_then_merges(tmp_path: Path):
         "        return 0.0\n"
         "    return a / b\n"
     )
-    provider = FakeProvider({
-        "issue_verifier": [CLAIM_JSON],
-        "semantic_detector": [SEMANTIC_EMPTY, SEMANTIC_EMPTY],
-        "reviewer": [REVIEW_APPROVE],
-        "fixer": [
-            json.dumps({
-                "tool": "write_file",
-                "args": {"path": "calc.py", "content": fixed},
-            }, ensure_ascii=False),
-            json.dumps({
-                "patch": "", "files": ["calc.py"],
-                "explanation": "补除零保护", "confidence": 0.9,
-            }, ensure_ascii=False),
-        ],
-    })
+    provider = FakeProvider(v2_provider_map(
+        pr_brief=PR_BRIEF_BUGFIX_JSON,
+        rounds=2,
+        overrides={
+            "coder": [
+                json.dumps({
+                    "tool": "write_file",
+                    "args": {"path": "calc.py", "content": fixed},
+                }, ensure_ascii=False),
+                json.dumps({
+                    "patch": "", "files": ["calc.py"],
+                    "explanation": "补除零保护", "confidence": 0.9,
+                }, ensure_ascii=False),
+            ],
+        },
+    ))
     github = FakeGitHub()
 
     def handler(spec):
@@ -74,7 +74,7 @@ def test_fixer_edits_in_sandbox_then_merges(tmp_path: Path):
     assert values["outcome"] == "MERGED", values
     assert values["fix_round"] == 1
     assert values["tool_calls"] >= 1
-    assert values["tool_events"][0]["tool"] == "write_file"
+    assert any(ev.get("tool") == "write_file" for ev in values["tool_events"])
     assert "return 0.0" in values["fix_patch"]
     # 修复后 review 输入必须反映修复树，而不是修复前的原始 diff（D1 回归）
     assert "return 0.0" in values["diff_text"]
@@ -101,12 +101,11 @@ def test_invalid_fix_is_repaired_then_merged(tmp_path: Path):
 
     cfg = load_settings(data_dir=tmp_path / "data", checkpoint_path=tmp_path / "ck.db",
                         sandbox_backend="fake")
-    provider = FakeProvider({
-        "issue_verifier": [CLAIM_JSON],
-        "semantic_detector": [SEMANTIC_EMPTY, SEMANTIC_EMPTY],
-        "reviewer": [REVIEW_APPROVE],
-        "fixer": [fix_json],
-    })
+    provider = FakeProvider(v2_provider_map(
+        pr_brief=PR_BRIEF_BUGFIX_JSON,
+        rounds=2,
+        overrides={"coder": [fix_json]},
+    ))
     github = FakeGitHub()
 
     def handler(spec):

@@ -114,6 +114,7 @@ def reviewer_perspective_prompt(
 红线约束：
 - 无明确问题时必须设 `needs_modification: false` 与 `findings: []`；
 - 只有 `severity` 为 `critical` 或 `major` 且非纯格式问题时才允许 `blocking: true`；
+- 对常规源码缺陷与缺失单元测试（可在本 PR 内修改源码或补充测试解决的），`auto_fixable` 应设为 `true`；仅对涉密、CI/策略篡改或需产品决策的问题设为 `false`；
 - 必须引用真实存在的路径与行号，禁止猜测或编造文件名；
 - 已存在于短期记忆 `raised_fingerprints` / `resolved_fingerprints` / `dismissed_fingerprints` 中且未在本轮变更重现的问题，严禁重复提交。"""
 

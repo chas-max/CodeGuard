@@ -123,7 +123,7 @@ def _pr_from_github(repo: str, number: int) -> PullRequestContext:
         author=(pr.get("user") or {}).get("login", ""),
         is_fork=bool(head.get("repo") and head["repo"].get("full_name") != repo),
         is_draft=bool(pr.get("draft")),
-        mergeable=bool(pr.get("mergeable", True)),
+        mergeable=(True if pr.get("mergeable") is None else bool(pr.get("mergeable"))),
         additions=int(pr.get("additions", 0)), deletions=int(pr.get("deletions", 0)),
         changed_file_count=int(pr.get("changed_files", 0)),
         default_branch="main", html_url=pr.get("html_url", ""),

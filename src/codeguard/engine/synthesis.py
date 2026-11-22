@@ -126,16 +126,22 @@ def normalize_finding_dict(raw: dict[str, Any], *, role: str = "") -> dict[str, 
         [str(r) for r in (data.get("reported_by") or []) if r]
         + ([role] if role else [])
     ))
-    auto_fixable = data.get("auto_fixable")
-    if auto_fixable is None:
-        auto_fixable = not any(norm_path.startswith(p) for p in _PROTECTED_PREFIXES)
-
     source_raw = str(data.get("source") or FindingSource.semantic.value)
     source = (
         FindingSource.deterministic.value
         if source_raw == FindingSource.deterministic.value
         else FindingSource.semantic.value
     )
+    auto_fixable = data.get("auto_fixable")
+    if source == FindingSource.semantic.value:
+        is_protected_semantic = (
+            any(norm_path.startswith(p) for p in _PROTECTED_PREFIXES)
+            or category in ("policy", "dependency", "ci")
+            or str(data.get("rule_id") or "") in ("SEC-001", "POL-001", "TEST-001")
+        )
+        auto_fixable = (not is_protected_semantic) and bool(norm_path)
+    elif auto_fixable is None:
+        auto_fixable = not any(norm_path.startswith(p) for p in _PROTECTED_PREFIXES)
     fid = str(data.get("id") or "")
     if not fid:
         fid = hashlib.sha1(

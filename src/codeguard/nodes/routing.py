@@ -35,9 +35,6 @@ def route_after_synthesize(state: ReviewState, ctx: Any) -> str:
 
     directive = state.get("fix_directive") or {}
     non_fixable = directive.get("non_fixable_blockers") or []
-    if non_fixable:
-        # 存在无法自动修复的策略/敏感密钥/删测阻塞项，直接提交结论拦截
-        return "summary_and_submit"
 
     max_fix = int(getattr(ctx.cfg, "max_fix_rounds", 5) or 5)
     max_rev = int(getattr(ctx.cfg, "max_review_rounds", 5) or 5)
@@ -48,6 +45,10 @@ def route_after_synthesize(state: ReviewState, ctx: Any) -> str:
         if state.get("escalation_reason") or cur_fix >= max_fix or (cur_rev >= max_rev and cur_fix > 0):
             return "summary_and_submit"
         return "coder_agent"
+
+    if non_fixable:
+        # 已无可自动修复项，仅剩不可自动修复的策略/敏感密钥/删测阻塞项，直接提交结论拦截
+        return "summary_and_submit"
 
     # 无需修改：若当前代码树尚未过 verify_gate（如首轮干净 PR），则走 verify_gate；
     # 若复审确认且刚刚在 verify_gate 通过（verified_tree_hash == current_hash），直接短路到 summary_and_submit。

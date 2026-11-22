@@ -8,11 +8,43 @@ from langchain_core.messages import HumanMessage
 from pydantic import BaseModel
 
 from ..errors import AgentError, RetryableError
-from ..llm import parse_dsml_tool_action, parse_json_loose, track_usage
+from ..llm import ROLE_MODELS, parse_dsml_tool_action, parse_json_loose, track_usage
 from ..retry import with_retry
 from ..tools.spec import ToolBox, ToolLimits, ToolSpec
 
 T = TypeVar("T", bound=BaseModel)
+
+_TRANSIENT_HINTS = (
+    "timed out",
+    "timeout",
+    "connection",
+    "502",
+    "503",
+    "504",
+    "429",
+    "rate limit",
+)
+
+
+def _is_transient_transport_error(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    return any(hint in msg for hint in _TRANSIENT_HINTS)
+
+
+def _resolve_fallback_llm(ctx: Any, role: str, primary: Any) -> Any:
+    """按 ROLE_MODELS 约定解析 `<role>_fallback` 备选模型；不可用时返回 None。"""
+    fb_role = f"{role}_fallback"
+    if role.endswith("_fallback") or fb_role not in ROLE_MODELS or not hasattr(ctx, "llm"):
+        return None
+    try:
+        fb = ctx.llm(fb_role)
+    except Exception:  # noqa: BLE001
+        return None
+    if fb is None or fb is primary:
+        return None
+    if hasattr(fb, "_queue") and not getattr(fb, "_queue"):
+        return None
+    return fb
 
 
 def _invoke_llm(llm: Any, role: str, messages: list) -> Any:
@@ -32,8 +64,15 @@ def _invoke_llm(llm: Any, role: str, messages: list) -> Any:
 
 
 def _invoke(ctx, role: str, messages: list) -> Any:
-    """调用一次 LLM；仅对瞬时错误重试，最终失败统一转 AgentError。"""
-    return _invoke_llm(ctx.llm(role), role, messages)
+    """调用一次 LLM；瞬时重试失败后自动切换到 `<role>_fallback`。"""
+    primary = ctx.llm(role)
+    try:
+        return _invoke_llm(primary, role, messages)
+    except AgentError:
+        fallback = _resolve_fallback_llm(ctx, role, primary)
+        if fallback is None:
+            raise
+        return _invoke_llm(fallback, f"{role}_fallback", messages)
 
 
 def _extract_native_tool_calls(response: Any) -> list[dict[str, Any]]:
@@ -85,16 +124,14 @@ def _extract_native_tool_calls(response: Any) -> list[dict[str, Any]]:
     return normalized
 
 
-def _invoke_with_tools(
-    ctx,
+def _invoke_single_with_tools(
+    llm: Any,
     role: str,
     messages: list,
     tool_specs: list[ToolSpec] | None = None,
     *,
     protocol: str = "auto",
 ) -> tuple[Any, str]:
-    """在支持 `bind_tools` 时优先走原生 Tool Calling，否则无缝回退文本协议。"""
-    llm = ctx.llm(role)
     if protocol != "json" and tool_specs and callable(getattr(llm, "bind_tools", None)):
         openai_tools = [spec.to_openai_tool() for spec in tool_specs]
         try:
@@ -104,11 +141,36 @@ def _invoke_with_tools(
             if protocol == "native":
                 raise AgentError(f"{role} 当前 LLM 不支持原生 bind_tools")
         except Exception as exc:
-            if protocol == "auto":
-                # 部分模型或代理对 tools 参数兼容性不佳，auto 模式下回退文本 JSON/DSML 协议
+            if protocol == "auto" and not _is_transient_transport_error(exc):
+                # 仅在非网络超时/限流异常（如模型代理不支持 tools 参数）时同模型降级文本协议
                 return _invoke_llm(llm, role, messages), "json"
             raise exc
     return _invoke_llm(llm, role, messages), "json"
+
+
+def _invoke_with_tools(
+    ctx,
+    role: str,
+    messages: list,
+    tool_specs: list[ToolSpec] | None = None,
+    *,
+    protocol: str = "auto",
+) -> tuple[Any, str]:
+    """在支持 `bind_tools` 时优先走原生 Tool Calling；失败时自动切换到 `<role>_fallback`。"""
+    primary = ctx.llm(role)
+    try:
+        return _invoke_single_with_tools(primary, role, messages, tool_specs, protocol=protocol)
+    except AgentError:
+        fallback = _resolve_fallback_llm(ctx, role, primary)
+        if fallback is None:
+            raise
+        return _invoke_single_with_tools(
+            fallback,
+            f"{role}_fallback",
+            messages,
+            tool_specs,
+            protocol=protocol,
+        )
 
 
 def _collect_usage(response: Any, role: str, costs: list[dict]) -> None:

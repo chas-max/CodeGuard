@@ -180,3 +180,46 @@ def test_protocol_json_skips_bind_tools_and_fakellm_fallback(tmp_path: Path):
     )
     assert out2.verdict == "fake_ok"
     assert events2[0]["protocol"] == "json"
+
+
+def test_invoke_with_tools_fails_over_to_fallback_on_timeout(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("time.sleep", lambda *_: None)
+
+    class _TimeoutLLM:
+        def __init__(self):
+            self.calls = 0
+
+        def bind_tools(self, tools: list[dict]):
+            return self
+
+        def invoke(self, messages: list[Any]):
+            self.calls += 1
+            raise TimeoutError("Request timed out.")
+
+    box = _make_box(tmp_path)
+    primary = _TimeoutLLM()
+    fallback = _NativeToolLLM([
+        AIMessage(content=json.dumps({"verdict": "fallback_ok", "evidence": ["recovered"]})),
+    ])
+
+    class _MultiRoleCtx:
+        def __init__(self):
+            self.cfg = Settings(mcp_disabled=True)
+            self.sandbox = FakeSandbox()
+
+        def llm(self, role: str):
+            return fallback if role == "coder_fallback" else primary
+
+    out, _costs, events = call_json_with_tools(
+        _MultiRoleCtx(),
+        "coder",
+        "Fix bug",
+        _Report,
+        tools=box,
+        limits=ToolLimits(max_steps=4, max_tool_calls=4, protocol="auto"),
+    )
+    assert out.verdict == "fallback_ok"
+    assert events == []
+    # 主模型只经历一次 with_retry(2)，绝不会再因 auto 降级重复在同一超时模型上卡死
+    assert primary.calls == 2
+    assert fallback.call_count == 1

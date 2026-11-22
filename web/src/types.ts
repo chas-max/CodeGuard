@@ -243,6 +243,16 @@ export interface ReviewValues {
   fix_files: string[];
   fix_pushed: boolean;
   fix_remote_sha: string;
+  importance_level?: string;
+  inherited_importance_level?: string;
+  code_partition?: Record<string, any> | null;
+  pr_brief?: Record<string, any> | null;
+  reviewer_outputs?: Record<string, any>;
+  fix_directive?: Record<string, any> | null;
+  qa_report?: Record<string, any> | null;
+  review_summary?: Record<string, any> | null;
+  memory_records_written?: string[];
+  escalation_reason?: string;
   merge_decision: Record<string, any> | null;
   outcome: string | null;
   merge_commit_sha: string;

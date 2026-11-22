@@ -542,7 +542,7 @@ class MergeDecision(BaseModel):
         return self
 
 
-from .models_v2 import (
+from .models_v2 import (  # noqa: E402
     IMPORTANCE_APPROVALS,
     IMPORTANCE_RANK,
     IMPORTANCE_TO_TIER,

@@ -12,9 +12,30 @@ import { Alert, Empty, JsonBlock, OutcomePill, Pill, Spinner, StatusPill } from 
 import { ExternalIcon, RefreshIcon } from "../components/icons";
 
 const NODE_LABELS: Record<string, string> = {
-  ingest: "接入", preflight: "预检", hybrid_scan: "混合检测", verify_issue: "意图/复现验证",
-  validate: "沙箱验证", review: "审查", fix: "修复", merge_gate: "合并门控",
-  human_approval: "人工审批", merge: "合并", finalize: "收尾",
+  prepare_context: "前置准备",
+  pr_reader: "PR 理解",
+  dispatch_reviewers: "并行分发",
+  review_logic: "逻辑审查",
+  review_security: "安全审查",
+  review_architecture: "架构审查",
+  review_tests: "测试审查",
+  synthesize_findings: "规则综合",
+  coder_agent: "代码修复",
+  qa_checker: "QA 对齐",
+  verify_gate: "前置验证",
+  summary_and_submit: "总结提交",
+  merge_gate: "合并门控",
+  human_approval: "人工审批",
+  merge: "合并",
+  persist_memory_and_finalize: "记忆落库",
+  ingest: "接入",
+  preflight: "预检",
+  hybrid_scan: "混合检测",
+  verify_issue: "意图/复现验证",
+  validate: "沙箱验证",
+  review: "审查",
+  fix: "修复",
+  finalize: "收尾",
 };
 
 export function JobDetailPage({ jobId }: { jobId: string }) {
@@ -41,6 +62,8 @@ export function JobDetailPage({ jobId }: { jobId: string }) {
   useJobStream(jobId, Boolean(snapshot.data) && !done, (event) => {
     setEvents((prev) => [event, ...prev].slice(0, 150));
     const terminal = [
+      "prepare_done", "pr_reader_done", "synthesize_done", "coder_done",
+      "qa_check_done", "verify_gate_done", "summary_submitted",
       "scan_done", "intent_verified", "issue_verified", "validation_done",
       "review_done", "fix_done", "merge_gate_done", "interrupt", "done", "error",
     ].includes(event.type);
@@ -233,7 +256,7 @@ export function JobDetailPage({ jobId }: { jobId: string }) {
                     <NodeResult node={selected} values={values} />
                   </div>
                 ) : (
-                  <JsonBlock value={selected === "ingest" ? values : pickNodeState(selected, values)} maxHeight={560} />
+                  <JsonBlock value={selected === "prepare_context" || selected === "ingest" ? values : pickNodeState(selected, values)} maxHeight={560} />
                 )}
               </div>
             </div>
@@ -247,6 +270,32 @@ export function JobDetailPage({ jobId }: { jobId: string }) {
 /** 按节点挑选相关 state 键，避免整份 values（含 diff_text）刷屏。 */
 function pickNodeState(node: string, values: Record<string, any>): Record<string, any> {
   const keys: Record<string, string[]> = {
+    prepare_context: [
+      "job_id", "repo", "pr_number", "pr_title", "author", "profile",
+      "importance_level", "inherited_importance_level", "risk_tier", "policy",
+      "code_partition", "changed_files", "diff_stats", "repo_map", "findings",
+    ],
+    pr_reader: [
+      "pr_brief", "importance_level", "risk_tier", "claim",
+      "issue_verification", "repro_tests", "reviewer_memories",
+    ],
+    dispatch_reviewers: ["review_round", "review_round_mode", "reviewer_memories"],
+    review_logic: ["reviewer_outputs", "reviewer_memories"],
+    review_security: ["reviewer_outputs", "reviewer_memories"],
+    review_architecture: ["reviewer_outputs", "reviewer_memories"],
+    review_tests: ["reviewer_outputs", "reviewer_memories"],
+    synthesize_findings: ["findings", "blocking_findings", "fix_directive", "review_decision"],
+    coder_agent: ["fix_round", "fix_files", "fix_patch", "fix_tree_hash", "fix_history"],
+    qa_checker: ["qa_report", "qa_history", "escalation_reason"],
+    verify_gate: ["validation_report", "verified_tree_hash", "reviewed_sha", "reviewed_tree_hash"],
+    summary_and_submit: [
+      "review_summary", "importance_level", "inherited_importance_level",
+      "fix_pushed", "fix_remote_sha", "submitted_pr_number",
+    ],
+    merge_gate: ["merge_decision", "importance_level", "risk_tier", "human_approvals", "finding_outcomes", "reviewed_sha"],
+    human_approval: ["human_approvals", "human_decision", "finding_outcomes", "risk_tier"],
+    merge: ["merge_decision", "merge_commit_sha", "outcome", "error"],
+    persist_memory_and_finalize: ["outcome", "status", "error", "memory_records_written", "run_record", "finished_at"],
     ingest: ["job_id", "repo", "pr_number", "pr_title", "author", "profile", "base_ref", "head_sha", "started_at"],
     preflight: ["risk_tier", "policy", "changed_files", "diff_stats", "repo_map", "review_guidance", "workspace_dir", "dry_run"],
     hybrid_scan: ["findings", "blocking_findings", "hybrid_scan_report", "semantic_unavailable"],
@@ -254,9 +303,6 @@ function pickNodeState(node: string, values: Record<string, any>): Record<string
     validate: ["validation_report", "reviewed_sha", "reviewed_tree_hash"],
     review: ["review_decision", "review_round", "review_round_mode", "escalation_reason"],
     fix: ["fix_round", "fix_files", "fix_pushed", "fix_remote_sha", "fix_tree_hash", "fix_patch"],
-    merge_gate: ["merge_decision", "risk_tier", "human_approvals", "finding_outcomes", "reviewed_sha"],
-    human_approval: ["human_approvals", "human_decision", "finding_outcomes", "risk_tier"],
-    merge: ["merge_decision", "merge_commit_sha", "outcome", "error"],
     finalize: ["outcome", "status", "error", "run_record", "finished_at"],
   };
   const picked: Record<string, any> = {};

@@ -50,6 +50,14 @@ function Logs({ text }: { text: string }) {
 }
 
 const NODE_ROLE_PREFIX: Record<string, string[]> = {
+  pr_reader: ["pr_reader"],
+  dispatch_reviewers: ["review_logic", "review_security", "review_architecture", "review_tests"],
+  review_logic: ["review_logic"],
+  review_security: ["review_security"],
+  review_architecture: ["review_architecture"],
+  review_tests: ["review_tests"],
+  coder_agent: ["coder"],
+  qa_checker: ["qa_checker"],
   hybrid_scan: ["semantic_detector", "finding_verifier"],
   verify_issue: ["issue_verifier"],
   review: ["reviewer"],
@@ -106,6 +114,168 @@ function ToolEventsSection({ node, events }: { node: string; events: any[] }) {
 export function NodeResult({ node, values }: { node: string; values: ReviewValues }) {
   const findings = asArray(values.findings) as Finding[];
   const blocking = asArray(values.blocking_findings) as Finding[];
+
+  if (node === "prepare_context") {
+    const risk = values.risk_tier || {};
+    const partition = values.code_partition || {};
+    const files = asArray(values.changed_files);
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <SubCard title="PR 与分级下限" extra={<Pill tone={risk.tier === "T2" ? "danger" : risk.tier === "T1" ? "warn" : "ok"}>{values.importance_level || "medium"} / {risk.tier || "—"}</Pill>}>
+          <KeyValue
+            items={[
+              ["仓库 / PR", <span className="mono">{values.repo || "—"}#{values.pr_number || "—"}</span>],
+              ["标题", values.pr_title || "—"],
+              ["审批门槛", `${risk.min_human_approvals ?? 0} 人${risk.require_non_author ? "（需非作者）" : ""}`],
+              ["代码分区", `源码 ${asArray(partition.source_files).length} · 测试 ${asArray(partition.test_files).length} · 配置 ${asArray(partition.config_dep_files).length} · 文档 ${asArray(partition.doc_files).length}`],
+              ["分级理由", asArray(risk.reasons).length ? asArray(risk.reasons).join("；") : "—"],
+            ]}
+          />
+        </SubCard>
+        <SubCard title="确定性快扫 findings" extra={<Pill tone={blocking.length ? "danger" : "ok"}>blocking {blocking.length}</Pill>}>
+          <FindingsList findings={findings} dense />
+        </SubCard>
+        <SubCard title="改动文件" extra={<Pill tone="muted">{files.length} 个</Pill>}>
+          {files.length ? <JsonBlock value={partition} maxHeight={200} /> : <Empty title="无文件变更" />}
+        </SubCard>
+      </div>
+    );
+  }
+
+  if (node === "pr_reader") {
+    const brief = values.pr_brief || {};
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <SubCard title="PR 语义简报" extra={<Pill tone="info">{values.importance_level || brief.suggested_importance || "medium"}</Pill>}>
+          <KeyValue
+            items={[
+              ["问题摘要", brief.problem_summary || "—"],
+              ["修改前", brief.before_behavior || "—"],
+              ["修改后", brief.after_behavior || "—"],
+              ["背景", brief.background || "—"],
+              ["模型理由", brief.importance_reason || "—"],
+            ]}
+          />
+        </SubCard>
+        <ToolEventsSection node={node} events={asArray(values.tool_events)} />
+      </div>
+    );
+  }
+
+  if (node === "dispatch_reviewers" || node.startsWith("review_")) {
+    const outputs = values.reviewer_outputs || {};
+    const targetRoles = node === "dispatch_reviewers" ? Object.keys(outputs) : [node];
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        {targetRoles.length ? targetRoles.map((roleKey) => {
+          const out = outputs[roleKey] || {};
+          return (
+            <SubCard
+              key={roleKey}
+              title={roleKey}
+              extra={<Pill tone={out.needs_modification ? "warn" : "ok"}>{out.needs_modification ? "需修改" : "通过"}</Pill>}
+            >
+              <KeyValue
+                items={[
+                  ["置信度", String(out.confidence ?? "—")],
+                  ["摘要", out.summary || "—"],
+                ]}
+              />
+              <FindingsList findings={asArray(out.findings) as Finding[]} />
+            </SubCard>
+          );
+        }) : <Empty title="等待审查视角产出" />}
+        <ToolEventsSection node={node} events={asArray(values.tool_events)} />
+      </div>
+    );
+  }
+
+  if (node === "synthesize_findings") {
+    const directive = values.fix_directive || {};
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <SubCard
+          title="规则综合与 FixDirective"
+          extra={<Pill tone={directive.needs_modification ? "warn" : "ok"}>{directive.needs_modification ? "需修复" : "通过"}</Pill>}
+        >
+          <KeyValue
+            items={[
+              ["总 findings / 阻塞项", `${findings.length} / ${blocking.length}`],
+              ["可修复文件范围", asArray(directive.allowed_fix_files).join(", ") || "—"],
+              ["允许补测文件", asArray(directive.allowed_test_addition_files).join(", ") || "无"],
+              ["不可自动修复", asArray(directive.non_fixable_blockers).join("；") || "无"],
+            ]}
+          />
+        </SubCard>
+        <SubCard title="综合问题列表">
+          <FindingsList findings={findings} />
+        </SubCard>
+      </div>
+    );
+  }
+
+  if (node === "coder_agent") {
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <SubCard
+          title={`Coder Agent · 第 ${values.fix_round ?? 0} 轮`}
+          extra={<Pill tone={values.fix_patch ? "ok" : "muted"}>{values.fix_files?.length || 0} 文件</Pill>}
+        >
+          <KeyValue
+            items={[
+              ["修改文件", asArray(values.fix_files).join(", ") || "—"],
+              ["树哈希", <span className="mono">{values.fix_tree_hash || "—"}</span>],
+            ]}
+          />
+        </SubCard>
+        {values.fix_patch ? <DiffBlock text={values.fix_patch} /> : <Empty title="无补丁内容" />}
+        <ToolEventsSection node={node} events={asArray(values.tool_events)} />
+      </div>
+    );
+  }
+
+  if (node === "qa_checker") {
+    const report = values.qa_report || {};
+    const tone = report.verdict === "pass" ? "ok" : report.verdict === "revise" ? "warn" : "danger";
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <SubCard title="QA Checker 对齐结果" extra={<Pill tone={tone}>{report.verdict || "—"}</Pill>}>
+          <KeyValue
+            items={[
+              ["作用域一致", bool(report.scope_ok)],
+              ["偏移警告", bool(report.drift_detected)],
+              ["摘要", report.summary || "—"],
+              ["返工指示", report.revise_instructions || "无"],
+            ]}
+          />
+        </SubCard>
+        <ToolEventsSection node={node} events={asArray(values.tool_events)} />
+      </div>
+    );
+  }
+
+  if (node === "summary_and_submit") {
+    const summary = values.review_summary || {};
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <SubCard title="总结与 PR 提交" extra={<Pill tone="info">{summary.effective_level || values.importance_level || "medium"}</Pill>}>
+          <KeyValue
+            items={[
+              ["继承等级 / 最终等级", `${values.inherited_importance_level || "—"} → ${summary.effective_level || values.importance_level || "—"}`],
+              ["提交方式", summary.submitted_mode || "comment"],
+              ["标题", summary.headline || "—"],
+              ["是否推送修复", bool(values.fix_pushed)],
+            ]}
+          />
+        </SubCard>
+        {summary.markdown_body ? (
+          <SubCard title="提交说明">
+            <pre className="code plain" style={{ maxHeight: 280 }}>{summary.markdown_body}</pre>
+          </SubCard>
+        ) : null}
+      </div>
+    );
+  }
 
   if (node === "ingest") {
     return (
@@ -259,12 +429,12 @@ export function NodeResult({ node, values }: { node: string; values: ReviewValue
     );
   }
 
-  if (node === "validate") {
+  if (node === "validate" || node === "verify_gate") {
     const report = values.validation_report || {};
     const tone = report.status === "passed" ? "ok" : report.status === "failed" ? "danger" : "warn";
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-        <SubCard title="沙箱验证" extra={<Pill tone={tone}>{report.status || "—"}</Pill>}>
+        <SubCard title="前置验证与沙箱门禁" extra={<Pill tone={tone}>{report.status || "—"}</Pill>}>
           <KeyValue
             items={[
               ["复现测试", bool(report.repro_passed)],
@@ -423,15 +593,17 @@ export function NodeResult({ node, values }: { node: string; values: ReviewValue
     );
   }
 
-  if (node === "finalize") {
+  if (node === "finalize" || node === "persist_memory_and_finalize") {
     const record = values.run_record || {};
+    const mems = asArray(values.memory_records_written);
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-        <SubCard title="终态" extra={<Pill tone={record.outcome === "MERGED" ? "ok" : "warn"}>{record.outcome || values.outcome || "—"}</Pill>}>
+        <SubCard title="终态与记忆入库" extra={<Pill tone={record.outcome === "MERGED" ? "ok" : "warn"}>{record.outcome || values.outcome || "—"}</Pill>}>
           <KeyValue
             items={[
               ["说明", record.message || "—"],
-              ["tier", record.tier || "—"],
+              ["重要等级 / tier", `${record.importance_level || values.importance_level || "—"} / ${record.tier || "—"}`],
+              ["写入向量记忆 ID", mems.length ? mems.join(", ") : "未写入"],
               ["耗时", record.duration_sec ? `${record.duration_sec}s` : "—"],
               ["审查轮次 / 修复轮次", `${record.review_rounds ?? 0} / ${record.fix_rounds ?? 0}`],
               ["findings（总/阻塞/已解决）", `${record.findings_total ?? 0} / ${record.findings_blocking ?? 0} / ${record.findings_resolved ?? 0}`],

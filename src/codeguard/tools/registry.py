@@ -175,9 +175,9 @@ ROLE_GROUPS = (
     "reviewer",
     "fixer",
 )
-# 各角色自身 role_cap 负责将只读 Agent 锁死在 read；
-# 允许 T0/low 级别在出现真实问题时由 Coder 在沙箱副本中自动修复。
-TIER_CAPABILITY: dict[str, Capability] = {"T0": "write", "T1": "write", "T2": "write"}
+# 默认低风险阶段对普通审查角色收敛至 read；coder 仅在沙箱隔离副本中写白名单文件，
+# 其他只读角色仍受自身 role_cap = "read" 严格限制。
+TIER_CAPABILITY: dict[str, Capability] = {"T0": "read", "T1": "write", "T2": "write"}
 
 
 def role_group(role: str) -> str:
@@ -210,7 +210,7 @@ def effective_capability(
     if cfg is not None and getattr(cfg, "agent_tools_disabled", False):
         return "none"
     role_cap = getattr(settings.roles, group, "read")
-    tier_cap = TIER_CAPABILITY.get(str(tier or "T1"), "write")
+    tier_cap = "write" if group == "coder" else TIER_CAPABILITY.get(str(tier or "T1"), "write")
     mode_cap = settings.external_max_capability if policy.mode == "external" else "write"
     env_cap = (getattr(cfg, "agent_tools_max_capability", "") or "write") if cfg else "write"
     return min_capability(role_cap, tier_cap, mode_cap, env_cap)

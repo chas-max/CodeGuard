@@ -100,7 +100,8 @@ class CodeGuardRuntime:
         return status
 
     def _config(self, job_id: str) -> dict:
-        return {"configurable": {"thread_id": job_id}, "recursion_limit": 100}
+        limit = int(getattr(self.cfg, "recursion_limit", 150) or 150)
+        return {"configurable": {"thread_id": job_id}, "recursion_limit": limit}
 
     # ── SSE ──
 

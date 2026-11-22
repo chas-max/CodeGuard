@@ -1,16 +1,23 @@
 import type { TraceStep } from "../types";
 
 const CHAIN = [
-  { node: "ingest", label: "接入" },
-  { node: "preflight", label: "预检" },
-  { node: "hybrid_scan", label: "混合检测" },
-  { node: "verify_issue", label: "验证" },
-  { node: "validate", label: "沙箱" },
-  { node: "review", label: "审查" },
+  { node: "prepare_context", label: "前置准备" },
+  { node: "pr_reader", label: "PR理解" },
+  { node: "dispatch_reviewers", label: "4路并行审" },
+  { node: "synthesize_findings", label: "规则综合" },
+  { node: "verify_gate", label: "前置验证" },
+  { node: "summary_and_submit", label: "总结提交" },
   { node: "merge_gate", label: "门控" },
   { node: "human_approval", label: "人工" },
   { node: "merge", label: "合并" },
-  { node: "finalize", label: "收尾" },
+  { node: "persist_memory_and_finalize", label: "记忆收尾" },
+];
+
+const PARALLEL_REVIEWERS = [
+  "review_logic",
+  "review_security",
+  "review_architecture",
+  "review_tests",
 ];
 
 type NodeState = "done" | "active" | "waiting" | "failed" | "pending";
@@ -35,9 +42,21 @@ export function FlowStrip({
 }) {
   const byNode = new Map<string, TraceStep>();
   steps.forEach((step) => byNode.set(step.node, step));
-  const fixSteps = steps.filter((step) => step.node === "fix");
+  const coderSteps = steps.filter((step) => step.node === "coder_agent");
+  const qaSteps = steps.filter((step) => step.node === "qa_checker");
 
   const stateOf = (node: string): NodeState => {
+    if (node === "dispatch_reviewers") {
+      const parallelSteps = PARALLEL_REVIEWERS
+        .map((n) => byNode.get(n))
+        .filter((s): s is TraceStep => Boolean(s));
+      if (parallelSteps.some((s) => s.running) || (!done && PARALLEL_REVIEWERS.includes(current))) {
+        return "active";
+      }
+      if (parallelSteps.length) {
+        return "done";
+      }
+    }
     const step = byNode.get(node);
     if (step?.running) return "active";
     if (step) {
@@ -56,13 +75,19 @@ export function FlowStrip({
         {CHAIN.map((item, index) => {
           const state = stateOf(item.node);
           const step = byNode.get(item.node);
+          const isParallelActive =
+            item.node === "dispatch_reviewers" && PARALLEL_REVIEWERS.includes(selected);
           return (
             <div key={item.node} style={{ display: "flex", alignItems: "center" }}>
               {index > 0 ? <span className="flow-arrow">›</span> : null}
               <button
                 type="button"
                 className={`flow-node ${state}`}
-                style={selected === item.node ? { borderColor: "var(--accent)", boxShadow: "0 0 0 3px rgba(53,214,164,0.09)" } : undefined}
+                style={
+                  selected === item.node || isParallelActive
+                    ? { borderColor: "var(--accent)", boxShadow: "0 0 0 3px rgba(53,214,164,0.09)" }
+                    : undefined
+                }
                 onClick={() => onSelect(item.node)}
                 title={step?.summary || item.label}
               >
@@ -74,18 +99,33 @@ export function FlowStrip({
             </div>
           );
         })}
-        {fixSteps.length ? (
+        {coderSteps.length ? (
           <div style={{ display: "flex", alignItems: "center" }}>
             <span className="flow-arrow">↺</span>
             <button
               type="button"
-              className={`flow-node ${selected === "fix" ? "active" : "done"}`}
-              style={{ borderStyle: "dashed", minWidth: 74 }}
-              onClick={() => onSelect("fix")}
-              title="fix 会回到 hybrid_scan 重新检测"
+              className={`flow-node ${selected === "coder_agent" ? "active" : "done"}`}
+              style={{ borderStyle: "dashed", minWidth: 78 }}
+              onClick={() => onSelect("coder_agent")}
+              title="coder_agent 修复后经 qa_checker 与 verify_gate 再回流 4 路增量复审"
             >
-              <span className="fn-label">修复 ×{fixSteps.length}</span>
-              <span className="fn-meta">{shortDuration(fixSteps[fixSteps.length - 1]?.duration_ms)}</span>
+              <span className="fn-label">修复 ×{coderSteps.length}</span>
+              <span className="fn-meta">{shortDuration(coderSteps[coderSteps.length - 1]?.duration_ms)}</span>
+            </button>
+          </div>
+        ) : null}
+        {qaSteps.length ? (
+          <div style={{ display: "flex", alignItems: "center" }}>
+            <span className="flow-arrow">›</span>
+            <button
+              type="button"
+              className={`flow-node ${selected === "qa_checker" ? "active" : "done"}`}
+              style={{ borderStyle: "dashed", minWidth: 74 }}
+              onClick={() => onSelect("qa_checker")}
+              title="qa_checker 校验 Coder diff 与 FixDirective 主题对齐"
+            >
+              <span className="fn-label">QA ×{qaSteps.length}</span>
+              <span className="fn-meta">{shortDuration(qaSteps[qaSteps.length - 1]?.duration_ms)}</span>
             </button>
           </div>
         ) : null}

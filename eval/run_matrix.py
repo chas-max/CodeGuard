@@ -513,7 +513,29 @@ class Runner:
         if self.provider is not None:
             provider = self.provider
         elif self.offline:
+            review_pass = json.dumps({
+                "needs_modification": False, "summary": "ok",
+                "findings": [], "memory_notes": [], "confidence": 0.9,
+            })
             provider = RepeatingProvider({
+                "pr_reader": json.dumps({
+                    "problem_summary": "eval change",
+                    "before_behavior": "before",
+                    "after_behavior": "works",
+                    "background_context": "offline eval",
+                    "change_intent": "feature",
+                    "llm_suggested_level": "medium",
+                    "escalation_reasons": [],
+                }),
+                "review_logic": review_pass,
+                "review_security": review_pass,
+                "review_architecture": review_pass,
+                "review_tests": review_pass,
+                "coder": json.dumps({"patch": "", "modified_files": [], "explanation": ""}),
+                "qa_checker": json.dumps({
+                    "verdict": "pass", "is_aligned": True, "has_scope_drift": False,
+                    "summary": "ok", "item_checks": [], "revise_instructions": [],
+                }),
                 "semantic_detector": json.dumps({"findings": [], "limitations": []}),
                 "issue_verifier": json.dumps({
                     "kind": "feature", "statement": "eval change", "expected": "works",

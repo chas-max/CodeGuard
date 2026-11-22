@@ -12,7 +12,6 @@ from ..models import (
     FindingLifecycle,
     FindingSource,
     FixDirective,
-    Severity,
     stable_content_hash,
     validate_repo_path,
 )

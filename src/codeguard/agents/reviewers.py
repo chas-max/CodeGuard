@@ -92,6 +92,7 @@ def run_perspective_review(
     round_mode: str,
     tools: ToolBox | None = None,
     limits: ToolLimits | None = None,
+    tier: str = "T1",
 ) -> tuple[PerspectiveReviewOutput, list[dict], list[dict]]:
     """运行单个专业视角的 Reviewer Agent，并结合短期记忆过滤重复问题。"""
     limits = limits or ToolLimits()
@@ -116,6 +117,7 @@ def run_perspective_review(
         tools=tools,
         limits=limits,
         temperature=0.1,
+        tier=tier,
     )
 
     touched = _diff_touched_lines(diff_text) if round_mode == "incremental" else {}

@@ -11,6 +11,10 @@ class RetryableError(CodeGuardError):
     """可重试的瞬时错误（网络抖动、限流、临时 API 失败）。"""
 
 
+class LLMTimeoutError(RetryableError):
+    """LLM 响应或流式传输超时（TTFT/Chunk 空闲/单步上限），应快速切换备选模型而非原地死等。"""
+
+
 class NonRetryableError(CodeGuardError):
     """不可重试的错误（参数错误、解析失败已兜底无果、沙箱环境不可用）。"""
 
@@ -52,7 +56,7 @@ class BudgetExceededError(CodeGuardError):
 
 
 __all__ = [
-    "CodeGuardError", "RetryableError", "NonRetryableError", "ConfigError",
+    "CodeGuardError", "RetryableError", "LLMTimeoutError", "NonRetryableError", "ConfigError",
     "MissingConfigError", "PolicyError", "SandboxError", "GitHubError",
     "GitHubAuthError", "AgentError", "CoordinatorError", "BudgetExceededError",
 ]

@@ -21,6 +21,7 @@ def run_qa_checker(
     max_fix_rounds: int,
     tools: ToolBox | None = None,
     limits: ToolLimits | None = None,
+    tier: str = "T1",
 ) -> tuple[QACheckReport, list[dict], list[dict]]:
     """对照 FixDirective 与工作区真实 Diff 判定是否一致、是否偏航。"""
     directive = (
@@ -63,6 +64,7 @@ def run_qa_checker(
         tools=tools,
         limits=limits,
         temperature=0.0,
+        tier=tier,
     )
 
     if det_drifts:

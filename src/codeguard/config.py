@@ -74,6 +74,10 @@ class Settings:
     dashscope_base_url: str = DEFAULT_DASHSCOPE_BASE_URL
     budget_max_cny: float = 10.0
     request_timeout_sec: int = 120
+    llm_thinking_mode: str = "tiered"  # tiered | off | legacy
+    llm_ttft_timeout_sec: float = 25.0
+    llm_chunk_idle_timeout_sec: float = 15.0
+    llm_step_timeout_sec: float = 75.0
 
     # limits
     max_pr_files: int = 50
@@ -171,6 +175,11 @@ class Settings:
             errors.append("AGENT_TOOLS_MAX_CAPABILITY 只允许 none/read/exec/write")
         if self.mcp_max_capability not in ("", "none", "read", "exec", "write"):
             errors.append("CODEGUARD_MCP_MAX_CAPABILITY 只允许 none/read/exec/write")
+        if self.llm_thinking_mode not in ("tiered", "off", "legacy"):
+            errors.append("CODEGUARD_THINKING_MODE 只允许 tiered/off/legacy")
+        for t_name in ("llm_ttft_timeout_sec", "llm_chunk_idle_timeout_sec", "llm_step_timeout_sec"):
+            if getattr(self, t_name) <= 0:
+                errors.append(f"{t_name} 必须大于 0")
         if not self.deepseek_api_key and not self.dashscope_api_key:
             errors.append("至少配置一个 LLM provider 的 API key")
         if require_docker and self.sandbox_backend == "docker":
@@ -226,6 +235,10 @@ def load_settings(
         dashscope_base_url=_env_str("DASHSCOPE_BASE_URL", DEFAULT_DASHSCOPE_BASE_URL),
         budget_max_cny=_env_float("BUDGET_MAX_CNY", 10.0),
         request_timeout_sec=_env_int("REQUEST_TIMEOUT_SEC", 120),
+        llm_thinking_mode=(_env_str("CODEGUARD_THINKING_MODE") or _env_str("LLM_THINKING_MODE", "tiered")).lower(),
+        llm_ttft_timeout_sec=_env_float("LLM_TTFT_TIMEOUT_SEC", 25.0),
+        llm_chunk_idle_timeout_sec=_env_float("LLM_CHUNK_IDLE_TIMEOUT_SEC", 15.0),
+        llm_step_timeout_sec=_env_float("LLM_STEP_TIMEOUT_SEC", 75.0),
         max_pr_files=_env_int("MAX_PR_FILES", 50),
         max_changed_lines=_env_int("MAX_CHANGED_LINES", 3000),
         max_diff_bytes=_env_int("MAX_DIFF_BYTES", 2_000_000),

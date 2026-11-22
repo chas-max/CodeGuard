@@ -143,6 +143,7 @@ def run_coder_agent(
     tools: ToolBox | None = None,
     limits: ToolLimits | None = None,
     root: Path | None = None,
+    tier: str = "T1",
 ) -> tuple[FixExecutionResult, list[dict], list[dict]]:
     """运行 Coder Agent：结合 FixDirective 与 RAG 记忆修复代码。"""
     directive = (
@@ -171,6 +172,7 @@ def run_coder_agent(
         tools=tools,
         limits=limits,
         temperature=0.1,
+        tier=tier,
     )
 
     patch_text = payload.patch

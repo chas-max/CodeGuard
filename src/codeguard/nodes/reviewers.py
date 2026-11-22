@@ -154,6 +154,7 @@ def make_reviewer_node(role: ReviewerRole):
                 round_mode=round_mode,
                 tools=tools,
                 limits=limits,
+                tier=tier_from_state(state),
             )
         except (AgentError, Exception) as exc:  # noqa: BLE001
             # 单个并行分支失败不拖垮其它 3 个分支；交由 synthesize_findings 统一判定降级/失败

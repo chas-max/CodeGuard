@@ -59,6 +59,7 @@ def summary_and_submit_node(state: ReviewState, ctx: Any) -> dict[str, Any]:
         inherited_level=inherited,
         effective_level=effective_lvl,
         escalation_reason=str(state.get("escalation_reason") or ""),
+        tier=IMPORTANCE_TO_TIER[effective_lvl],
     )
 
     fix_pushed = bool(state.get("fix_pushed"))

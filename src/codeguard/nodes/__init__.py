@@ -75,7 +75,8 @@ class ReviewNodes:
         self.cfg = cfg or load_settings()
         # GitHub App 模式：按仓库解析 installation token；PAT 模式保持 cfg.github_token。
         self.token_provider = token_provider
-        self._llm_provider = llm_provider or (lambda role: make_llm(role, self.cfg))
+        self._uses_default_llm = llm_provider is None
+        self._llm_provider = llm_provider or (lambda role, **kw: make_llm(role, self.cfg, **kw))
         self._llms: dict = {}
         self._llm_lock = threading.Lock()
         self.coordinator = coordinator or Coordinator(max_parallel=self.cfg.coordinator_max_parallel)
@@ -152,12 +153,18 @@ class ReviewNodes:
                 return token
         return self.cfg.github_token
 
-    def llm(self, role: str):
-        """按角色懒加载并缓存 LLM 客户端（线程安全）。"""
+    def llm(self, role: str, *, tier: str = "T1", phase: str = "default"):
+        """按角色（及思考分级/阶段）懒加载并缓存 LLM 客户端（线程安全）。"""
+        supports_profile = self._uses_default_llm or bool(getattr(self._llm_provider, "_supports_profile", False))
+        key = (role, tier, phase) if supports_profile else role
         with self._llm_lock:
-            if role not in self._llms:
-                self._llms[role] = self._llm_provider(role)
-            return self._llms[role]
+            if key not in self._llms:
+                self._llms[key] = (
+                    self._llm_provider(role, tier=tier, phase=phase)
+                    if supports_profile
+                    else self._llm_provider(role)
+                )
+            return self._llms[key]
 
     def tools_for(
         self,

@@ -44,6 +44,7 @@ def read_pr_context(
     deterministic_reasons: list[str],
     tools: ToolBox | None = None,
     limits: ToolLimits | None = None,
+    tier: str = "T1",
 ) -> tuple[PRBrief, list[dict], list[dict]]:
     """调用 pr_reader Agent 生成 PRBrief，并强制保证 final_level >= deterministic_level。"""
     limits = limits or ToolLimits()
@@ -77,6 +78,7 @@ def read_pr_context(
         tools=tools,
         limits=limits,
         temperature=0.1,
+        tier=tier,
     )
     suggested = normalize_importance(payload.llm_suggested_level, default=deterministic_level)
     final_level = max_importance(deterministic_level, suggested)

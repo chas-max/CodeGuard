@@ -15,7 +15,7 @@ from ..models import (
     normalize_importance,
 )
 from ..prompts.summary import summary_prompt
-from .base import call_json
+from .base import _resolve_llm, call_json
 
 
 class _SummaryPayload(BaseModel):
@@ -101,11 +101,12 @@ def generate_review_summary(
     inherited_level: ImportanceLevel,
     effective_level: ImportanceLevel,
     escalation_reason: str = "",
+    tier: str = "T1",
 ) -> tuple[ReviewSummary, list[dict]]:
     """生成结构化 PR Summary；当 LLM 不可用或配置未覆盖 summary 时确定性兜底。"""
     merged_level = max_importance(inherited_level, effective_level)
     try:
-        llm = ctx.llm("summary")
+        llm = _resolve_llm(ctx, "summary", tier=tier)
         if hasattr(llm, "_queue") and not llm._queue:
             raise RuntimeError("summary mock queue empty")
     except Exception:
@@ -133,7 +134,7 @@ def generate_review_summary(
         escalation_reason=escalation_reason,
     )
     try:
-        payload, costs = call_json(ctx, "summary", prompt, _SummaryPayload, temperature=0.1)
+        payload, costs = call_json(ctx, "summary", prompt, _SummaryPayload, temperature=0.1, tier=tier)
         summary = ReviewSummary(
             headline=payload.headline.strip() or f"[{merged_level.upper()}] PR 审查更新",
             inherited_level=inherited_level,

@@ -157,6 +157,7 @@ def coder_node(state: ReviewState, ctx: Any) -> dict[str, Any]:
             tools=tools,
             limits=limits,
             root=fix_root,
+            tier=tier_from_state(state),
         )
     except (AgentError, Exception) as exc:  # noqa: BLE001
         return {
@@ -301,6 +302,7 @@ def qa_checker_node(state: ReviewState, ctx: Any) -> dict[str, Any]:
             max_fix_rounds=max_fix_rounds,
             tools=tools,
             limits=limits,
+            tier=tier_from_state(state),
         )
     except (AgentError, Exception) as exc:  # noqa: BLE001
         return {

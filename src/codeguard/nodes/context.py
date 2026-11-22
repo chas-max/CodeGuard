@@ -382,6 +382,7 @@ def pr_reader_node(state: ReviewState, ctx: Any) -> dict[str, Any]:
             deterministic_reasons=det_reasons,
             tools=tools,
             limits=limits,
+            tier=IMPORTANCE_TO_TIER[det_level],
         )
     except AgentError as exc:
         return {

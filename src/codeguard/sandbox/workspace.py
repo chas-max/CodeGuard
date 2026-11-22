@@ -38,13 +38,13 @@ def clone_repo(repo_url: str, dest: Path, *, ref: str = "", token: str | None = 
     url = repo_url
     if token and url.startswith("https://"):
         url = url.replace("https://", f"https://x-access-token:{token}@", 1)
-    cmd = ["git", "clone", "--no-checkout", "--filter=blob:none", url, str(dest)]
+    cmd = ["git", "-c", "http.postBuffer=16777216", "clone", "--no-checkout", "--filter=blob:none", url, str(dest)]
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_sec)
     if proc.returncode != 0:
         raise RuntimeError(f"git clone 失败: {redact_secrets((proc.stderr or proc.stdout)[:500])}")
     if ref:
         checkout = subprocess.run(
-            ["git", "-C", str(dest), "fetch", "--depth=1", "origin", ref],
+            ["git", "-C", str(dest), "-c", "http.postBuffer=16777216", "fetch", "--depth=1", "origin", ref],
             capture_output=True, text=True, timeout=timeout_sec,
         )
         if checkout.returncode != 0:

@@ -108,7 +108,8 @@ def classify_tier(
 
     agent_authored = detect_agent_authorship(pr_body, labels)
     trusted = is_trusted_author(author, policy)
-    if (agent_authored or not trusted) and _ORDER[tier] < _ORDER["T1"]:
+    require_trusted = policy.mode == "external" or bool(policy.trusted_authors)
+    if (agent_authored or (require_trusted and not trusted)) and _ORDER[tier] < _ORDER["T1"]:
         tier = "T1"
         reasons.append("agent 创作" if agent_authored else f"作者不在可信名单: {author or '(空)'}")
 

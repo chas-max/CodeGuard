@@ -62,7 +62,7 @@ review:
   max_findings_verified: 5
 
 merge:
-  allow_zero_human: false          # 开启后 T0 才允许 0 人审批
+  allow_zero_human: true           # low(T0) 级默认自动合并；medium=1人，critical=2人
   queue:
     update_branch_on_stale: false
     max_attempts: 1
@@ -113,6 +113,13 @@ agents:
       - "mypy"
     external_max_capability: read
     roles:
+      pr_reader: read
+      review_logic: read
+      review_security: read
+      review_architecture: read
+      review_tests: read
+      coder: write
+      qa_checker: read
       semantic_detector: read
       finding_verifier: read
       issue_verifier: read
@@ -131,7 +138,7 @@ agents:
         args: ["-m", "codeguard.mcp.servers.osv_server"]
         timeout_sec: 15
         capability: read
-        allowed_roles: ["semantic_detector", "reviewer"]
+        allowed_roles: ["review_security", "semantic_detector", "reviewer"]
       - name: git_history
         enabled: true
         transport: stdio
@@ -139,7 +146,19 @@ agents:
         args: ["-m", "codeguard.mcp.servers.git_server"]
         timeout_sec: 15
         capability: read
-        allowed_roles: ["semantic_detector", "finding_verifier", "reviewer", "fixer"]
+        allowed_roles:
+          [
+            "pr_reader",
+            "review_logic",
+            "review_security",
+            "review_architecture",
+            "review_tests",
+            "coder",
+            "semantic_detector",
+            "finding_verifier",
+            "reviewer",
+            "fixer",
+          ]
       - name: knowledge
         enabled: true
         transport: stdio
@@ -147,7 +166,16 @@ agents:
         args: ["-m", "codeguard.mcp.servers.knowledge_server"]
         timeout_sec: 15
         capability: read
-        allowed_roles: ["semantic_detector", "finding_verifier", "reviewer", "fixer"]
+        allowed_roles:
+          [
+            "review_security",
+            "review_architecture",
+            "coder",
+            "semantic_detector",
+            "finding_verifier",
+            "reviewer",
+            "fixer",
+          ]
       - name: github_context
         enabled: true
         transport: stdio
@@ -156,7 +184,7 @@ agents:
         env_vars: ["GITHUB_TOKEN", "GH_TOKEN"]
         timeout_sec: 15
         capability: read
-        allowed_roles: ["issue_verifier", "reviewer"]
+        allowed_roles: ["pr_reader", "issue_verifier", "reviewer"]
 
 rules:
   disable: []

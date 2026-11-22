@@ -223,6 +223,41 @@ class GitHubClient:
             },
         )
 
+    def create_pull_request(
+        self,
+        repo: str,
+        *,
+        title: str,
+        body: str,
+        head: str,
+        base: str,
+        labels: list[str] | None = None,
+    ) -> dict:
+        """创建关联 PR（用于外部只读 Fork 或 submit_mode=new_pr 时递交修复分支）。"""
+        created = self._request(
+            "POST",
+            f"/repos/{repo}/pulls",
+            repo=repo,
+            json={
+                "title": title[:250],
+                "body": body[:60000],
+                "head": head,
+                "base": base,
+            },
+        ) or {}
+        number = created.get("number")
+        if number and labels:
+            try:
+                self._request(
+                    "POST",
+                    f"/repos/{repo}/issues/{int(number)}/labels",
+                    repo=repo,
+                    json={"labels": list(labels)},
+                )
+            except GitHubError:
+                pass
+        return created
+
     def update_ref(self, repo: str, branch: str, *, sha: str, force: bool = False) -> dict:
         return self._request(
             "PATCH", f"/repos/{repo}/git/refs/heads/{branch}", repo=repo,

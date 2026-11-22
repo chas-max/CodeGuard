@@ -25,8 +25,10 @@ class LocalGitHub:
         self.branch_sha = ""
         self.ci_state = "success"
         self.pulls: list[dict] = []
+        self.created_prs: list[dict] = []
         self.repos: list[dict] = []
         self._next_comment_id = 0
+        self._next_pr_number = 9000
 
     # ── 读 ──
 
@@ -89,6 +91,30 @@ class LocalGitHub:
         self.pushed.append({"repo": repo, "branch": branch, "files": files,
                             "expected": expected_head_sha})
         return {"sha": LOCAL_PUSH_SHA}
+
+    def create_pull_request(
+        self,
+        repo: str,
+        *,
+        title: str,
+        body: str,
+        head: str,
+        base: str,
+        labels: list[str] | None = None,
+    ) -> dict:
+        self._next_pr_number += 1
+        item = {
+            "repo": repo,
+            "number": self._next_pr_number,
+            "title": title,
+            "body": body,
+            "head": head,
+            "base": base,
+            "labels": list(labels or []),
+            "html_url": f"https://github.com/{repo}/pull/{self._next_pr_number}",
+        }
+        self.created_prs.append(item)
+        return item
 
     def merge(self, repo: str, number: int, *, sha: str, method: str, title: str, message: str) -> dict:  # noqa: ARG002
         self.merged.append({"repo": repo, "number": number, "sha": sha, "method": method})

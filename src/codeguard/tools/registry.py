@@ -1,4 +1,4 @@
-"""工具注册表：按 Agent 职责分配工具，并把能力收敛到最小上限。"""
+"""工具注册表：按 Agent 职责分配最小权限工具集。"""
 from __future__ import annotations
 
 import time
@@ -7,7 +7,7 @@ from typing import Any, Callable
 
 from pydantic import BaseModel, ValidationError
 
-from . import edit_tools, fs_tools, review_tools, sandbox_tools
+from . import edit_tools, fs_tools, memory_tools, review_tools, sandbox_tools
 from .base import error_result, summarize_args
 from .spec import (
     Capability,
@@ -19,8 +19,38 @@ from .spec import (
     min_capability,
 )
 
-# 每个 Agent 的默认工具集合。实际可用集合还要受 effective_capability 过滤。
+# 每个 Agent 的最小权限工具集合；只有 coder/fixer 拥有写工具与沙箱执行权。
 ROLE_TOOLS: dict[str, tuple[str, ...]] = {
+    "pr_reader": (
+        "read_file", "diff_base_head", "get_pr_metadata",
+    ),
+    "review_logic": (
+        "read_file", "grep", "ast_symbols", "find_symbol_usages",
+        "diff_base_head", "related_files",
+    ),
+    "review_security": (
+        "read_file", "grep", "ast_symbols", "find_symbol_usages",
+        "diff_base_head", "query_findings",
+    ),
+    "review_architecture": (
+        "read_file", "list_dir", "grep", "ast_symbols",
+        "find_symbol_usages", "related_files",
+    ),
+    "review_tests": (
+        "read_file", "grep", "inspect_tests", "diff_base_head",
+        "related_files", "query_findings",
+    ),
+    "coder": (
+        "read_file", "list_dir", "grep", "related_files",
+        "ast_symbols", "find_symbol_usages", "diff_base_head", "check_patch_guard",
+        "search_procedural_memory",
+        "run_tests", "run_check", "run_command",
+        "edit_file", "apply_patch", "write_file",
+    ),
+    "qa_checker": (
+        "read_file", "diff_base_head", "ast_symbols",
+    ),
+    # 兼容保留旧角色映射
     "semantic_detector": (
         "read_file", "list_dir", "grep", "related_files",
         "ast_symbols", "find_symbol_usages", "diff_base_head", "inspect_tests",
@@ -41,8 +71,9 @@ ROLE_TOOLS: dict[str, tuple[str, ...]] = {
     "fixer": (
         "read_file", "list_dir", "grep", "related_files",
         "ast_symbols", "find_symbol_usages", "diff_base_head", "check_patch_guard",
+        "search_procedural_memory",
         "run_tests", "run_check", "run_command",
-        "apply_patch", "write_file",
+        "edit_file", "apply_patch", "write_file",
     ),
 }
 
@@ -58,9 +89,11 @@ TOOL_CAPABILITY: dict[str, ToolCapability] = {
     "inspect_tests": "read",
     "query_findings": "read",
     "check_patch_guard": "read",
+    "search_procedural_memory": "read",
     "run_tests": "exec",
     "run_check": "exec",
     "run_command": "exec",
+    "edit_file": "write",
     "apply_patch": "write",
     "write_file": "write",
 }
@@ -76,12 +109,14 @@ TOOL_DESCRIPTIONS: dict[str, str] = {
     "get_pr_metadata": "获取当前 PR 脱敏元数据（仓库、PR 号、分支、标题、正文与变更文件列表）。",
     "inspect_tests": "静态扫描关联测试文件与测试用例名（不执行代码），确认测试覆盖情况。",
     "query_findings": "按文件/严重度/来源查询前序静态分析产出的告警记录。",
-    "check_patch_guard": "只读预检修复补丁是否符合 allowed_files 与禁改测试红线。",
+    "check_patch_guard": "只读预检修复补丁是否符合 allowed_files 与测试保护红线。",
+    "search_procedural_memory": "检索本地程序化向量记忆库中的历史问题修复策略与反面教训（RAG）。",
     "run_tests": "在 Docker 沙箱中运行指定测试文件（network=none）。",
     "run_check": "在沙箱中运行仓库策略里声明的检查项（如 lint/typecheck）。",
     "run_command": "在沙箱中运行白名单内的命令（argv 形式，不接受 shell 拼接）。",
+    "edit_file": "精确局部替换单个源文件中的唯一匹配文本片段（Search-and-Replace）。",
     "apply_patch": "把 unified diff 应用到当前修复副本；路径必须在允许列表内。",
-    "write_file": "覆盖或新建单个源文件；路径必须在允许列表内，禁止改测试。",
+    "write_file": "覆盖或新建单个文件；路径必须在允许列表内。",
 }
 
 ARGS_MODELS: dict[str, type[BaseModel]] = {
@@ -96,9 +131,11 @@ ARGS_MODELS: dict[str, type[BaseModel]] = {
     "inspect_tests": review_tools.InspectTestsArgs,
     "query_findings": review_tools.QueryFindingsArgs,
     "check_patch_guard": review_tools.CheckPatchGuardArgs,
+    "search_procedural_memory": memory_tools.SearchProceduralMemoryArgs,
     "run_tests": sandbox_tools.RunTestsArgs,
     "run_check": sandbox_tools.RunCheckArgs,
     "run_command": sandbox_tools.RunCommandArgs,
+    "edit_file": edit_tools.EditFileArgs,
     "apply_patch": edit_tools.ApplyPatchArgs,
     "write_file": edit_tools.WriteFileArgs,
 }
@@ -115,15 +152,32 @@ TOOL_TIMEOUTS: dict[str, int] = {
     "inspect_tests": 15,
     "query_findings": 10,
     "check_patch_guard": 10,
+    "search_procedural_memory": 15,
     "run_tests": 300,
     "run_check": 300,
     "run_command": 300,
+    "edit_file": 30,
     "apply_patch": 60,
     "write_file": 30,
 }
 
-ROLE_GROUPS = ("semantic_detector", "finding_verifier", "issue_verifier", "reviewer", "fixer")
-TIER_CAPABILITY: dict[str, Capability] = {"T0": "read", "T1": "write", "T2": "write"}
+ROLE_GROUPS = (
+    "pr_reader",
+    "review_logic",
+    "review_security",
+    "review_architecture",
+    "review_tests",
+    "coder",
+    "qa_checker",
+    "semantic_detector",
+    "finding_verifier",
+    "issue_verifier",
+    "reviewer",
+    "fixer",
+)
+# 各角色自身 role_cap 负责将只读 Agent 锁死在 read；
+# 允许 T0/low 级别在出现真实问题时由 Coder 在沙箱副本中自动修复。
+TIER_CAPABILITY: dict[str, Capability] = {"T0": "write", "T1": "write", "T2": "write"}
 
 
 def role_group(role: str) -> str:
@@ -199,11 +253,13 @@ class AgentToolBox:
         limits: ToolLimits,
         repo_map: dict | None = None,
         allowed_files: list[str] | None = None,
+        allowed_test_addition_files: list[str] | None = None,
         slots: Any = None,
         names: list[str] | None = None,
         base_root: Path | None = None,
         pr_context: dict[str, Any] | None = None,
         findings: list[dict[str, Any]] | None = None,
+        memory_store: Any = None,
     ):
         self.role = role
         self.capability = capability
@@ -211,18 +267,25 @@ class AgentToolBox:
         self.base_root = base_root
         self.pr_context = dict(pr_context or {})
         self.findings = list(findings or [])
+        self.memory_store = memory_store
         self.job_id = job_id
         self.ctx = ctx
         self.policy = policy
         self.limits = limits
         self.repo_map = repo_map or {}
         self.allowed_files = list(allowed_files or [])
+        self.allowed_test_addition_files = list(allowed_test_addition_files or [])
         self._events: list[dict] = []
+        self._used_memory_ids: list[str] = []
         self._deadline: float | None = None
         self._enabled_names = set(names) if names is not None else None
         self._specs: list[ToolSpec] = []
         self._handlers: dict[str, Callable[[Any], ToolResult]] = {}
-        self._edit_env = edit_tools.EditEnv(root, self.allowed_files)
+        self._edit_env = edit_tools.EditEnv(
+            root,
+            self.allowed_files,
+            allowed_test_addition_files=self.allowed_test_addition_files,
+        )
         self._sandbox_env = sandbox_tools.SandboxEnv(
             ctx=ctx, policy=policy, job_id=job_id, root=root, limits=limits,
             slots=slots, allow_commands=_allowed_commands(policy),
@@ -261,6 +324,7 @@ class AgentToolBox:
         self._handlers[spec.name] = handler
 
     def bind_default_handlers(self) -> None:
+        current_repo = str(self.pr_context.get("repo") or "")
         fs_map: dict[str, Callable[[Any], ToolResult]] = {
             "read_file": lambda a: fs_tools.read_file(self.root, a, max_chars=self.limits.max_output_chars),
             "list_dir": lambda a: fs_tools.list_dir(self.root, a, max_chars=self.limits.max_output_chars),
@@ -281,10 +345,21 @@ class AgentToolBox:
             "query_findings": lambda a: review_tools.query_findings(
                 self.findings, a, max_chars=self.limits.max_output_chars),
             "check_patch_guard": lambda a: review_tools.check_patch_guard(
-                self.root, self.allowed_files, a, max_chars=self.limits.max_output_chars),
+                self.root,
+                self._edit_env.all_allowed_paths(),
+                a,
+                max_chars=self.limits.max_output_chars,
+            ),
+            "search_procedural_memory": lambda a: memory_tools.search_procedural_memory(
+                self.memory_store,
+                a,
+                current_repo=current_repo,
+                max_chars=self.limits.max_output_chars,
+            ),
             "run_tests": lambda a: sandbox_tools.run_tests(self._sandbox_env, a),
             "run_check": lambda a: sandbox_tools.run_check(self._sandbox_env, a),
             "run_command": lambda a: sandbox_tools.run_command(self._sandbox_env, a),
+            "edit_file": lambda a: edit_tools.edit_file(self._edit_env, a),
             "apply_patch": lambda a: edit_tools.apply_patch(self._edit_env, a),
             "write_file": lambda a: edit_tools.write_file(self._edit_env, a),
         }
@@ -298,6 +373,10 @@ class AgentToolBox:
     @property
     def events(self) -> list[dict]:
         return list(self._events)
+
+    @property
+    def used_memory_ids(self) -> list[str]:
+        return list(self._used_memory_ids)
 
     def set_deadline(self, deadline: float | None) -> None:
         self._deadline = deadline
@@ -325,6 +404,10 @@ class AgentToolBox:
         result.duration_ms = int((time.monotonic() - started) * 1000)
         if not result.output_chars:
             result.output_chars = len(result.content)
+        if name == "search_procedural_memory" and result.ok:
+            for mid in list((result.meta or {}).get("memory_ids") or []):
+                if mid and mid not in self._used_memory_ids:
+                    self._used_memory_ids.append(str(mid))
         self._events.append({
             "role": self.role,
             "tool": name,
@@ -349,12 +432,14 @@ def build_toolbox(
     tier: str = "T1",
     repo_map: dict | None = None,
     allowed_files: list[str] | None = None,
+    allowed_test_addition_files: list[str] | None = None,
     limits: ToolLimits | None = None,
     slots: Any = None,
     base_root: Path | None = None,
     pr_context: dict[str, Any] | None = None,
     findings: list[dict[str, Any]] | None = None,
     mcp_manager: Any = None,
+    memory_store: Any = None,
 ) -> AgentToolBox | None:
     """构造受限工具箱；能力为 none 或没有可用工具时返回 None（调用方回退单轮）。"""
     cfg = getattr(ctx, "cfg", None)
@@ -365,7 +450,7 @@ def build_toolbox(
         name for name in role_tools(role)
         if name in TOOL_CAPABILITY and capability_allows(capability, TOOL_CAPABILITY[name])
     ]
-    if not allowed_files:
+    if not (allowed_files or allowed_test_addition_files):
         names = [name for name in names if TOOL_CAPABILITY[name] != "write"]
     if not names:
         return None
@@ -379,11 +464,13 @@ def build_toolbox(
         limits=limits or limits_from_policy(policy),
         repo_map=repo_map,
         allowed_files=allowed_files,
+        allowed_test_addition_files=allowed_test_addition_files,
         slots=slots,
         names=names,
         base_root=base_root,
         pr_context=pr_context,
         findings=findings,
+        memory_store=memory_store if memory_store is not None else getattr(ctx, "memory_store", None),
     )
     box.bind_default_handlers()
 

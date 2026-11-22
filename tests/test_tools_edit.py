@@ -84,9 +84,58 @@ def test_apply_patch_rejects_out_of_scope(tmp_path: Path):
 
 def test_non_fixer_has_no_write_tools(tmp_path: Path):
     root = _repo(tmp_path)
+    for role in ("reviewer", "pr_reader", "review_logic", "review_security",
+                 "review_architecture", "review_tests", "qa_checker"):
+        box = build_toolbox(
+            role=role, root=root, job_id="j", ctx=Ctx(), policy=Policy(), tier="T1",
+            allowed_files=["src/a.py"],
+        )
+        names = {spec.name for spec in box.specs()}
+        assert "write_file" not in names and "apply_patch" not in names and "edit_file" not in names
+
+
+def test_edit_file_and_controlled_test_addition_guard(tmp_path: Path):
+    root = _repo(tmp_path)
     box = build_toolbox(
-        role="reviewer", root=root, job_id="j", ctx=Ctx(), policy=Policy(), tier="T1",
+        role="coder",
+        root=root,
+        job_id="j-coder",
+        ctx=Ctx(),
+        policy=Policy(),
+        tier="T1",
         allowed_files=["src/a.py"],
+        allowed_test_addition_files=["tests/test_a.py"],
     )
-    names = {spec.name for spec in box.specs()}
-    assert "write_file" not in names and "apply_patch" not in names
+    # 1. edit_file 精确局部修改源文件成功
+    res_src = box.dispatch("edit_file", {
+        "path": "src/a.py",
+        "old_text": "    return 1",
+        "new_text": "    return 42",
+    })
+    assert res_src.ok, res_src.error
+    assert "return 42" in (root / "src" / "a.py").read_text(encoding="utf-8")
+
+    # 2. 向授权测试文件追加新测试函数允许通过
+    res_add = box.dispatch("edit_file", {
+        "path": "tests/test_a.py",
+        "old_text": "def test_f():\n    assert True\n",
+        "new_text": "def test_f():\n    assert True\n\ndef test_added():\n    assert 1 == 1\n",
+    })
+    assert res_add.ok, res_add.error
+
+    # 3. 试图删减原有测试断言必须被 AST 守卫拦截
+    res_weaken = box.dispatch("edit_file", {
+        "path": "tests/test_a.py",
+        "old_text": "def test_f():\n    assert True\n",
+        "new_text": "def test_f():\n    pass\n",
+    })
+    assert res_weaken.status == "denied"
+    assert "断言" in res_weaken.error
+
+    # 4. 试图删除原有测试函数必须被拦截
+    res_del = box.dispatch("write_file", {
+        "path": "tests/test_a.py",
+        "content": "def test_added():\n    assert 1 == 1\n",
+    })
+    assert res_del.status == "denied"
+    assert "删除" in res_del.error

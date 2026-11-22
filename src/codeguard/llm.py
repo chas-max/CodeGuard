@@ -17,6 +17,23 @@ from .errors import NonRetryableError
 
 # role -> (provider, default model)。可用 MODEL_<ROLE> 环境变量覆盖模型。
 ROLE_MODELS: dict[str, tuple[str, str]] = {
+    "pr_reader": ("deepseek", "deepseek-flash"),
+    "pr_reader_fallback": ("qwen", "qwen3.8-flash"),
+    "review_logic": ("deepseek", "deepseek-flash"),
+    "review_logic_fallback": ("qwen", "qwen3.8-flash"),
+    "review_security": ("deepseek", "deepseek-flash"),
+    "review_security_fallback": ("qwen", "qwen3.8-flash"),
+    "review_architecture": ("deepseek", "deepseek-flash"),
+    "review_architecture_fallback": ("qwen", "qwen3.8-flash"),
+    "review_tests": ("deepseek", "deepseek-flash"),
+    "review_tests_fallback": ("qwen", "qwen3.8-flash"),
+    "coder": ("qwen", "qwen3.8-flash"),
+    "coder_fallback": ("deepseek", "deepseek-flash"),
+    "qa_checker": ("deepseek", "deepseek-flash"),
+    "qa_checker_fallback": ("qwen", "qwen3.8-flash"),
+    "summary": ("deepseek", "deepseek-flash"),
+    "summary_fallback": ("qwen", "qwen3.8-flash"),
+    # 兼容保留旧角色
     "issue_verifier": ("deepseek", "deepseek-flash"),
     "issue_verifier_fallback": ("qwen", "qwen3.8-flash"),
     "semantic_detector": ("deepseek", "deepseek-flash"),

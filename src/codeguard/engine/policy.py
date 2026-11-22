@@ -166,7 +166,7 @@ class MergeQueueSettings(BaseModel):
 
 class MergeSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    allow_zero_human: bool = False
+    allow_zero_human: bool = True
     queue: MergeQueueSettings = Field(default_factory=MergeQueueSettings)
 
 
@@ -206,6 +206,14 @@ class AgentRoleTools(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    pr_reader: CapabilityName = "read"
+    review_logic: CapabilityName = "read"
+    review_security: CapabilityName = "read"
+    review_architecture: CapabilityName = "read"
+    review_tests: CapabilityName = "read"
+    coder: CapabilityName = "write"
+    qa_checker: CapabilityName = "read"
+    # 兼容保留旧角色配置字段
     semantic_detector: CapabilityName = "read"
     finding_verifier: CapabilityName = "read"
     issue_verifier: CapabilityName = "read"
@@ -278,7 +286,7 @@ def default_mcp_servers() -> list[McpServerPolicy]:
             args=["-m", "codeguard.mcp.servers.osv_server"],
             timeout_sec=15,
             capability="read",
-            allowed_roles=["semantic_detector", "reviewer"],
+            allowed_roles=["review_security", "semantic_detector", "reviewer"],
         ),
         McpServerPolicy(
             name="git_history",
@@ -289,6 +297,12 @@ def default_mcp_servers() -> list[McpServerPolicy]:
             timeout_sec=15,
             capability="read",
             allowed_roles=[
+                "pr_reader",
+                "review_logic",
+                "review_security",
+                "review_architecture",
+                "review_tests",
+                "coder",
                 "semantic_detector",
                 "finding_verifier",
                 "reviewer",
@@ -304,6 +318,9 @@ def default_mcp_servers() -> list[McpServerPolicy]:
             timeout_sec=15,
             capability="read",
             allowed_roles=[
+                "review_security",
+                "review_architecture",
+                "coder",
                 "semantic_detector",
                 "finding_verifier",
                 "reviewer",
@@ -319,7 +336,7 @@ def default_mcp_servers() -> list[McpServerPolicy]:
             env_vars=["GITHUB_TOKEN", "GH_TOKEN"],
             timeout_sec=15,
             capability="read",
-            allowed_roles=["issue_verifier", "reviewer"],
+            allowed_roles=["pr_reader", "issue_verifier", "reviewer"],
         ),
     ]
 

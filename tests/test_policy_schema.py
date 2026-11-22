@@ -17,15 +17,15 @@ def test_default_policy_is_internal_change_profile():
     assert policy.mode == "internal"
     assert policy.profiles.default == "change"
     assert policy.require_reproduction is False
+    # v2 默认开启 low(T0) 自动合并：T0=0，T1=1，T2=2
+    assert policy.min_approvals("T0") == 0
     assert policy.min_approvals("T1") == 1
     assert policy.min_approvals("T2") == 2
-    # allow_zero_human 默认关闭：即便是 T0 也至少 1 人
+
+
+def test_disable_zero_human_requires_one_for_t0():
+    policy = Policy.model_validate({"merge": {"allow_zero_human": False}})
     assert policy.min_approvals("T0") == 1
-
-
-def test_allow_zero_human_enables_t0():
-    policy = Policy.model_validate({"merge": {"allow_zero_human": True}})
-    assert policy.min_approvals("T0") == 0
     assert policy.min_approvals("T1") == 1
 
 

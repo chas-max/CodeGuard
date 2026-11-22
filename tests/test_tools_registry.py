@@ -73,10 +73,41 @@ def test_default_role_matrix():
         "mcp__github_context__list_pr_comments",
         "mcp__github_context__get_commit_status",
     }
+    assert _names(_box("pr_reader")) == {
+        "read_file", "diff_base_head", "get_pr_metadata",
+        "mcp__git_history__git_blame",
+        "mcp__git_history__git_file_log",
+        "mcp__git_history__git_show_commit",
+        "mcp__github_context__get_issue",
+        "mcp__github_context__list_pr_comments",
+        "mcp__github_context__get_commit_status",
+    }
+    assert _names(_box("review_logic")) == {
+        "read_file", "grep", "ast_symbols", "find_symbol_usages",
+        "diff_base_head", "related_files",
+        "mcp__git_history__git_blame",
+        "mcp__git_history__git_file_log",
+        "mcp__git_history__git_show_commit",
+    }
+    assert _names(_box("qa_checker")) == {
+        "read_file", "diff_base_head", "ast_symbols",
+    }
+    assert _names(_box("coder", allowed_files=["src/a.py"])) == {
+        "read_file", "list_dir", "grep", "related_files",
+        "ast_symbols", "find_symbol_usages", "diff_base_head", "check_patch_guard",
+        "search_procedural_memory",
+        "run_tests", "run_check", "run_command", "edit_file", "apply_patch", "write_file",
+        "mcp__git_history__git_blame",
+        "mcp__git_history__git_file_log",
+        "mcp__git_history__git_show_commit",
+        "mcp__knowledge__inspect_package_api",
+        "mcp__knowledge__search_incidents",
+    }
     assert _names(_box("fixer", allowed_files=["src/a.py"])) == {
         "read_file", "list_dir", "grep", "related_files",
         "ast_symbols", "find_symbol_usages", "diff_base_head", "check_patch_guard",
-        "run_tests", "run_check", "run_command", "apply_patch", "write_file",
+        "search_procedural_memory",
+        "run_tests", "run_check", "run_command", "edit_file", "apply_patch", "write_file",
         "mcp__git_history__git_blame",
         "mcp__git_history__git_file_log",
         "mcp__git_history__git_show_commit",
@@ -87,8 +118,9 @@ def test_default_role_matrix():
 
 def test_write_tools_require_allowed_files():
     names = _names(_box("fixer"))
-    assert "apply_patch" not in names and "write_file" not in names
+    assert "apply_patch" not in names and "write_file" not in names and "edit_file" not in names
     assert "run_tests" in names
+    assert "search_procedural_memory" in _names(_box("coder"))
 
 
 def test_default_enabled():
@@ -96,11 +128,18 @@ def test_default_enabled():
     assert policy.agents.tools.enabled is True
     assert effective_capability(role="reviewer", policy=policy) == "exec"
     assert effective_capability(role="fixer", policy=policy) == "write"
+    assert effective_capability(role="coder", policy=policy) == "write"
+    for ro_role in ("pr_reader", "review_logic", "review_security",
+                    "review_architecture", "review_tests", "qa_checker"):
+        assert effective_capability(role=ro_role, policy=policy) == "read"
 
 
-def test_t0_caps_every_role_at_read():
-    for role in ("semantic_detector", "reviewer", "fixer"):
-        assert effective_capability(role=role, policy=Policy(), tier="T0") == "read"
+def test_non_coder_roles_stay_read_across_all_tiers():
+    for tier in ("T0", "T1", "T2"):
+        for ro_role in ("pr_reader", "review_logic", "review_security",
+                        "review_architecture", "review_tests", "qa_checker"):
+            assert effective_capability(role=ro_role, policy=Policy(), tier=tier) == "read"
+        assert effective_capability(role="coder", policy=Policy(), tier=tier) == "write"
 
 
 def test_external_mode_caps_at_external_max():

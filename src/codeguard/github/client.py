@@ -140,7 +140,7 @@ class GitHubClient:
         return self._request("POST", f"/repos/{repo}/issues/{number}/comments", repo=repo, json={"body": body})
 
     def update_comment(self, repo: str, comment_id: int, body: str) -> dict:
-        return self._request("PATCH", f"/repos/{repo}/issues/comments/{comment_id}", json={"body": body})
+        return self._request("PATCH", f"/repos/{repo}/issues/comments/{comment_id}", repo=repo, json={"body": body})
 
     def create_status(self, repo: str, sha: str, *, state: str, context: str, description: str) -> dict:
         return self._request(
@@ -165,7 +165,7 @@ class GitHubClient:
 
     def update_review_comment(self, repo: str, comment_id: int, *, body: str) -> dict:
         return self._request(
-            "PATCH", f"/repos/{repo}/pulls/comments/{comment_id}", json={"body": body},
+            "PATCH", f"/repos/{repo}/pulls/comments/{comment_id}", repo=repo, json={"body": body},
         )
 
     @with_retry(max_attempts=3)
@@ -309,6 +309,7 @@ class GitHubClient:
         new_sha = (commit or {}).get("sha", "")
         self._request(
             "PATCH", f"/repos/{repo}/git/refs/heads/{branch}",
+            repo=repo,
             json={"sha": new_sha, "force": False},
         )
         return {"sha": new_sha}
